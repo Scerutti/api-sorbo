@@ -9,7 +9,15 @@ export class AppController {
 
   @Public()
   @Get()
-  getHello(): string {
-    return this.appService.getHello();
+  healthCheck(): {
+    status: string;
+    timestamp: string;
+    uptime: number;
+    database: {
+      status: string;
+      connectionState: string;
+    };
+  } {
+    return this.appService.healthCheck();
   }
 }
