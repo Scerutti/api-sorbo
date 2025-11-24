@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  sorbo:
+    image: scerutti/sorbo-sabores-api:latest
+    build: .
+    container_name: api-sorbo
+    ports:
+      - 8080:808
+    env_file:
+      - .env
+    restart: unless-stopped
