@@ -10,7 +10,8 @@
   COPY package*.json ./
   
   # Instalo dependencias (sin dev si no las necesitas en prod)
-  RUN npm install
+  # Usar --legacy-peer-deps para evitar conflictos de peer dependencies
+  RUN npm install --legacy-peer-deps
   
   # Copio el resto del código
   COPY . .
