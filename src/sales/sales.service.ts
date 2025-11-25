@@ -36,8 +36,15 @@ export class SalesService {
     vendedorId?: string,
   ): Promise<SaleResponseDto> {
     try {
+      // Validar stock antes de crear la venta
+      await this.validateStock(createSaleDto.items);
+
       const payload = await this.prepareSalePayload(createSaleDto, vendedorId);
       const createdSale = await this.saleModel.create(payload);
+
+      // Actualizar stock después de crear la venta
+      await this.updateStockOnCreate(createdSale.items);
+
       return this.mapToDto(createdSale);
     } catch (error) {
       if (error instanceof HttpException) {
@@ -91,10 +98,20 @@ export class SalesService {
         payload.esMayorista = updateSaleDto.esMayorista;
       }
 
+      // Si se actualizan los items, validar stock y ajustar
       if (Array.isArray(updateSaleDto.items)) {
+        // Validar stock considerando que se restaurará el stock de la venta anterior
+        await this.validateStockOnEdit(
+          currentSale.items,
+          updateSaleDto.items,
+        );
+
         const items = await this.buildItems(updateSaleDto.items, esMayorista);
         payload.items = items;
         payload.total = this.calculateTotal(items);
+
+        // Ajustar stock: restaurar el stock de la venta anterior y reducir el de la nueva
+        await this.updateStockOnEdit(currentSale.items, items);
       }
 
       const updatedSale = await this.saleModel
@@ -123,6 +140,9 @@ export class SalesService {
     if (!deletedSale) {
       throw new NotFoundException('Venta no encontrada');
     }
+
+    // Restaurar stock de todos los productos de la venta eliminada
+    await this.updateStockOnDelete(deletedSale.items);
   }
 
   private async prepareSalePayload(
@@ -275,6 +295,165 @@ export class SalesService {
     return plainToInstance(SaleResponseDto, saleContract, {
       excludeExtraneousValues: true,
     });
+  }
+
+  /**
+   * Valida que haya suficiente stock para los items de la venta
+   */
+  private async validateStock(items: CreateSaleItemDto[]): Promise<void> {
+    for (const item of items) {
+      const product = await this.productModel.findById(item.productId).exec();
+      if (!product) {
+        throw new NotFoundException(
+          `Producto ${item.productId} no encontrado`,
+        );
+      }
+
+      if (product.stock < item.cantidad) {
+        throw new HttpException(
+          `Stock insuficiente para el producto "${product.nombre}". Stock disponible: ${product.stock}, solicitado: ${item.cantidad}`,
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+    }
+  }
+
+  /**
+   * Valida stock al editar una venta, considerando el stock que se restaurará
+   */
+  private async validateStockOnEdit(
+    oldItems: Sale['items'],
+    newItems: CreateSaleItemDto[],
+  ): Promise<void> {
+    // Crear mapa de cantidades antiguas por producto
+    const oldItemsMap = new Map<string, number>();
+    for (const item of oldItems) {
+      const productId =
+        typeof item.productId === 'string'
+          ? item.productId
+          : item.productId.toString();
+      oldItemsMap.set(productId, (oldItemsMap.get(productId) || 0) + item.cantidad);
+    }
+
+    // Validar cada producto nuevo considerando el stock que se restaurará
+    for (const item of newItems) {
+      const product = await this.productModel.findById(item.productId).exec();
+      if (!product) {
+        throw new NotFoundException(
+          `Producto ${item.productId} no encontrado`,
+        );
+      }
+
+      const oldCantidad = oldItemsMap.get(item.productId) || 0;
+      // Stock disponible = stock actual + cantidad que se restaurará de la venta anterior
+      const stockDisponible = product.stock + oldCantidad;
+
+      if (stockDisponible < item.cantidad) {
+        throw new HttpException(
+          `Stock insuficiente para el producto "${product.nombre}". Stock disponible: ${stockDisponible} (${product.stock} actual + ${oldCantidad} a restaurar), solicitado: ${item.cantidad}`,
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+    }
+  }
+
+  /**
+   * Actualiza el stock cuando se crea una venta (reduce el stock)
+   */
+  private async updateStockOnCreate(items: Sale['items']): Promise<void> {
+    for (const item of items) {
+      const productId =
+        typeof item.productId === 'string'
+          ? item.productId
+          : item.productId.toString();
+
+      await this.productModel.findByIdAndUpdate(
+        productId,
+        {
+          $inc: { stock: -item.cantidad, soldCount: item.cantidad },
+        },
+        { new: true },
+      );
+    }
+  }
+
+  /**
+   * Actualiza el stock cuando se edita una venta
+   * Restaura el stock de los items anteriores y reduce el stock de los nuevos items
+   */
+  private async updateStockOnEdit(
+    oldItems: Sale['items'],
+    newItems: Sale['items'],
+  ): Promise<void> {
+    // Crear mapas para comparar cantidades por producto
+    const oldItemsMap = new Map<string, number>();
+    const newItemsMap = new Map<string, number>();
+
+    // Mapear items antiguos
+    for (const item of oldItems) {
+      const productId =
+        typeof item.productId === 'string'
+          ? item.productId
+          : item.productId.toString();
+      oldItemsMap.set(productId, (oldItemsMap.get(productId) || 0) + item.cantidad);
+    }
+
+    // Mapear items nuevos
+    for (const item of newItems) {
+      const productId =
+        typeof item.productId === 'string'
+          ? item.productId
+          : item.productId.toString();
+      newItemsMap.set(productId, (newItemsMap.get(productId) || 0) + item.cantidad);
+    }
+
+    // Obtener todos los productos únicos
+    const allProductIds = new Set([
+      ...oldItemsMap.keys(),
+      ...newItemsMap.keys(),
+    ]);
+
+    // Actualizar stock para cada producto
+    for (const productId of allProductIds) {
+      const oldCantidad = oldItemsMap.get(productId) || 0;
+      const newCantidad = newItemsMap.get(productId) || 0;
+      const diferencia = newCantidad - oldCantidad;
+
+      if (diferencia !== 0) {
+        // Si la diferencia es negativa, se restaura stock
+        // Si la diferencia es positiva, se reduce stock
+        await this.productModel.findByIdAndUpdate(
+          productId,
+          {
+            $inc: {
+              stock: -diferencia,
+              soldCount: diferencia,
+            },
+          },
+          { new: true },
+        );
+      }
+    }
+  }
+
+  /**
+   * Restaura el stock cuando se elimina una venta
+   */
+  private async updateStockOnDelete(items: Sale['items']): Promise<void> {
+    for (const item of items) {
+      const productId =
+        typeof item.productId === 'string'
+          ? item.productId
+          : item.productId.toString();
+
+      await this.productModel.findByIdAndUpdate(
+        productId,
+        {
+          $inc: { stock: item.cantidad, soldCount: -item.cantidad },
+        },
+        { new: true },
+      );
+    }
   }
 
   private extractMessage(error: unknown, fallback: string): string {
