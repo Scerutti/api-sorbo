@@ -62,6 +62,12 @@ export class CreateSaleDto {
   @IsBoolean()
   @Type(() => Boolean)
   esMayorista?: boolean;
+
+  // El frontend puede enviar vendedorId, pero el backend lo obtiene del usuario autenticado
+  @Allow()
+  @IsOptional()
+  @IsMongoId()
+  vendedorId?: string;
 }
 
 export class CreateSaleItemDto {
