@@ -1,4 +1,3 @@
-
 import {
   HttpException,
   HttpStatus,
@@ -8,6 +7,7 @@ import {
 import { InjectModel } from '@nestjs/mongoose';
 import { plainToInstance } from 'class-transformer';
 import { Model } from 'mongoose';
+import * as ExcelJS from 'exceljs';
 import { Product, ProductDocument } from '../products/schemas/product.schema';
 import { CreateSaleDto, CreateSaleItemDto } from './dto/create-sale.dto';
 import { SaleResponseDto } from './dto/sale-response.dto';
@@ -143,6 +143,79 @@ export class SalesService {
 
     // Restaurar stock de todos los productos de la venta eliminada
     await this.updateStockOnDelete(deletedSale.items);
+  }
+
+  async generateSaleExcel(
+    id: string,
+  ): Promise<{ workbook: ExcelJS.Workbook; fileName: string }> {
+    const sale = await this.saleModel.findById(id).exec();
+    if (!sale) {
+      throw new NotFoundException('Venta no encontrada');
+    }
+
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('Detalle de venta');
+
+    worksheet.columns = [
+    { header: 'Producto', key: 'nombre', width: 35 },
+    { header: 'Cantidad', key: 'cantidad', width: 12 },
+    { header: 'Precio Unitario', key: 'precioUnitario', width: 18 },
+    { header: 'Total por Producto', key: 'subtotal', width: 22 },
+    { header: 'TOTAL VENTA', key: 'totalGeneral', width: 20 },
+  ];
+
+    const headerRow = worksheet.getRow(1);
+    headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FF4F81BD' },
+    };
+    headerRow.alignment = { vertical: 'middle', horizontal: 'center' };
+
+
+    sale.items.forEach((item) => {
+        worksheet.addRow({
+          nombre: item.productNombre,
+          cantidad: item.cantidad,
+          precioUnitario: item.precioUnitario,
+          subtotal: item.cantidad * item.precioUnitario,
+        });
+      });
+
+    worksheet.getColumn('precioUnitario').numFmt = '$#,##0.00';
+    worksheet.getColumn('subtotal').numFmt = '$#,##0.00';
+    worksheet.getColumn('totalGeneral').numFmt = '$#,##0.00';
+
+    worksheet.addRow([]);
+
+    const lastRow = worksheet.addRow({
+      subtotal: 'TOTAL FINAL:',
+      totalGeneral: sale.total
+    });
+
+    lastRow.getCell('subtotal').font = { bold: true };
+    lastRow.getCell('totalGeneral').font = {
+      bold: true,
+      size: 12,
+      color: { argb: 'FFC00000' }
+    };
+
+    worksheet.eachRow((row) => {
+      row.eachCell((cell) => {
+        cell.border = {
+          top: { style: 'thin' },
+          left: { style: 'thin' },
+          bottom: { style: 'thin' },
+          right: { style: 'thin' },
+        };
+      });
+    });
+
+    const fechaVenta = sale.fecha.toISOString().split('T')[0];
+    const fileName = `sorbo_sabores_venta_${id.substring(id.length - 5)}_${fechaVenta}.xlsx`;
+
+    return { workbook, fileName };
   }
 
   private async prepareSalePayload(

@@ -18,26 +18,45 @@ async function bootstrap() {
     new FastifyAdapter(),
   );
 
+  const contentSecurityPolicy = process.env.NODE_ENV === 'production' ? {} : false;
+
   await app.register(helmet, {
     global: true,
+    crossOriginResourcePolicy: { policy: "cross-origin"},
+    contentSecurityPolicy: contentSecurityPolicy
   });
 
-  const allowedOrigins = (process.env.CORS_ORIGINS ?? '')
-    .split(',')
-    .map((origin) => origin.trim())
-    .filter(Boolean);
-
-  await app.register(cors, {
-    origin: allowedOrigins.length > 0 ? allowedOrigins : true,
+  // Configurar CORS según el entorno
+  const isDevelopment = process.env.NODE_ENV === 'development';
+  const commonCorsConfig = {
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: [
-      'Content-Type',
-      'Authorization',
-      'Accept',
-      'Origin',
-      'X-Requested-With',
+      'Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With', 'Range'
     ],
+    exposedHeaders: ['Content-Disposition'],
+  };
+
+
+  await app.register(cors, {
+    ...commonCorsConfig,
+    origin: (origin, callback) => {
+      if (isDevelopment) {
+        // En dev aceptamos localhost
+        if (!origin || origin.includes('localhost')) {
+          callback(null, true);
+          return;
+        }
+      } else {
+        // En prod leemos de la variable
+        const allowedOrigins = (process.env.CORS_ORIGINS ?? '').split(',').map(o => o.trim()).filter(Boolean);
+        if (allowedOrigins.includes(`${origin}`) || allowedOrigins.length === 0) {
+          callback(null, true);
+          return;
+        }
+      }
+      callback(null, false);
+    },
   });
 
   const cookieSecret = process.env.COOKIE_SECRET;

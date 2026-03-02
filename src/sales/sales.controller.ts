@@ -10,9 +10,11 @@ import {
   Param,
   Patch,
   Post,
+  Res,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
+import type { FastifyReply } from 'fastify';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { GetUser } from '../auth/decorators/get-user.decorator';
@@ -52,6 +54,24 @@ export class SalesController {
   @ApiResponse({ status: HttpStatus.OK, type: SaleResponseDto })
   async findOne(@Param('id') id: string): Promise<SaleResponseDto> {
     return this.salesService.findOne(id);
+  }
+
+  @Get(":id/export")
+  @ApiOperation({ summary: "Exportar detalle de venta a Excel" })
+  async exportExcel(
+    @Param("id") id: string,
+    @Res() res: FastifyReply
+  ) {
+    const { workbook, fileName } = await this.salesService.generateSaleExcel(id);
+
+    const buffer = await workbook.xlsx.writeBuffer();
+
+    res.header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.header('Content-Disposition', `attachment; filename="${fileName}"`);
+
+    res.header('Access-Control-Expose-Headers', 'Content-Disposition');
+
+    return res.send(buffer);
   }
 
   @Patch(':id')
