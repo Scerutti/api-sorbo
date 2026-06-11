@@ -63,6 +63,49 @@ export class SalesService {
     return sales.map((sale) => this.mapToDto(sale));
   }
 
+  /**
+   * Lista las ventas dentro del rango de fechas indicado (ordenadas por fecha).
+   * Usado por el reporte mensual de gastos/ingresos.
+   */
+  async findByDateRange(
+    fechaDesde?: string,
+    fechaHasta?: string,
+  ): Promise<SaleResponseDto[]> {
+    const filter = this.buildDateFilter(fechaDesde, fechaHasta);
+    const sales = await this.saleModel.find(filter).sort({ fecha: 1 }).exec();
+    return sales.map((sale) => this.mapToDto(sale));
+  }
+
+  /**
+   * Suma el total de ventas (ingresos) dentro del rango de fechas indicado.
+   */
+  async sumTotalByDateRange(
+    fechaDesde?: string,
+    fechaHasta?: string,
+  ): Promise<number> {
+    const filter = this.buildDateFilter(fechaDesde, fechaHasta);
+    const sales = await this.saleModel.find(filter).exec();
+    return sales.reduce((acc, sale) => acc + sale.total, 0);
+  }
+
+  private buildDateFilter(
+    fechaDesde?: string,
+    fechaHasta?: string,
+  ): Record<string, unknown> {
+    const filter: Record<string, unknown> = {};
+    if (fechaDesde || fechaHasta) {
+      const rango: Record<string, Date> = {};
+      if (fechaDesde) {
+        rango.$gte = new Date(fechaDesde);
+      }
+      if (fechaHasta) {
+        rango.$lte = new Date(fechaHasta);
+      }
+      filter.fecha = rango;
+    }
+    return filter;
+  }
+
   async findOne(id: string): Promise<SaleResponseDto> {
     const sale = await this.saleModel.findById(id).exec();
     if (!sale) {

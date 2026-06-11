@@ -1,7 +1,9 @@
 
 import { Type } from 'class-transformer';
 import {
+  IsArray,
   IsEnum,
+  IsMongoId,
   IsNumber,
   IsOptional,
   IsString,
@@ -18,10 +20,18 @@ export class CreateCostDto {
   @IsEnum(CostItemType)
   tipo!: CostItemType;
 
+  // Opcional: si se envían `componentes`, el `valor` se calcula en el backend.
+  // Si no hay componentes, `valor` es obligatorio (validado en el service).
+  @IsOptional()
   @Type(() => Number)
   @IsNumber()
   @Min(0)
-  valor!: number;
+  valor?: number;
+
+  @IsOptional()
+  @IsArray()
+  @IsMongoId({ each: true })
+  componentes?: string[];
 
   @IsOptional()
   @IsString()

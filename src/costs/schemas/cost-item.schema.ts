@@ -1,10 +1,11 @@
 
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { HydratedDocument } from 'mongoose';
+import { HydratedDocument, Types } from 'mongoose';
 import {
   CostItemType,
   COST_ITEM_TYPE_VALUES,
 } from '../../shared/enums/cost-item-type.enum';
+import { GastoBase } from '../../expenses/schemas/gasto-base.schema';
 
 @Schema({
   timestamps: true,
@@ -21,6 +22,15 @@ export class CostItem {
 
   @Prop({ required: true, min: 0 })
   valor!: number;
+
+  // Gastos base que componen este costo. Si tiene elementos, `valor` se
+  // recalcula dinámicamente como la suma de sus valorUnitario. Si está vacío,
+  // se usa el `valor` cargado a mano (retrocompatibilidad).
+  @Prop({
+    type: [{ type: Types.ObjectId, ref: GastoBase.name }],
+    default: [],
+  })
+  componentes!: Types.ObjectId[];
 
   @Prop()
   descripcion?: string;

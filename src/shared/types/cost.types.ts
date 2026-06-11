@@ -6,5 +6,6 @@ export interface CostItemContract {
   nombre: string;
   tipo: CostItemType;
   valor: number;
+  componentes?: string[];
   descripcion?: string;
 }
