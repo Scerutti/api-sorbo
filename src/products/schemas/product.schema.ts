@@ -16,6 +16,9 @@ export class Product {
   @Prop({ required: true, trim: true })
   nombre!: string;
 
+  @Prop({ type: String, trim: true, required: false })
+  descripcion?: string;
+
   @Prop({ required: true, type: String, enum: PRODUCT_TYPE_VALUES })
   tipo!: ProductType;
 

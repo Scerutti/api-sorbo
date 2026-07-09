@@ -14,6 +14,10 @@ export class CreateProductDto {
   @IsString()
   nombre!: string;
 
+  @IsOptional()
+  @IsString()
+  descripcion?: string;
+
   @IsEnum(ProductType)
   tipo!: ProductType;
 

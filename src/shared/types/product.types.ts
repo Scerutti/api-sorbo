@@ -5,6 +5,7 @@ import { MongoId } from './common.types';
 export interface ProductContract {
   id: MongoId;
   nombre: string;
+  descripcion?: string;
   tipo: ProductType;
   precioCosto: number;
   porcentajeGanancia: number;

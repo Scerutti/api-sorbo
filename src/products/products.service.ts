@@ -27,6 +27,7 @@ export class ProductsService {
     try {
       const createdProduct = await this.productModel.create({
         nombre: createProductDto.nombre,
+        descripcion: createProductDto.descripcion,
         tipo: createProductDto.tipo,
         precioCosto: createProductDto.precioCosto,
         porcentajeGanancia: createProductDto.porcentajeGanancia,

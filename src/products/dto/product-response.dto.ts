@@ -11,6 +11,9 @@ export class ProductResponseDto implements BaseResponseDto {
   nombre!: string;
 
   @Expose()
+  descripcion?: string;
+
+  @Expose()
   tipo!: ProductType;
 
   @Expose()
