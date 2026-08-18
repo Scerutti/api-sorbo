@@ -7,6 +7,9 @@
  *   3. Product.tipo   (string) -> Product.tipoId   (ObjectId).
  *   4. Verifica que no quede ningun documento sin tipoId; si queda, aborta.
  *
+ * Tambien crea los indices (unico en TipoCosto.nombre, y tipoId en costos y
+ * productos), porque en produccion autoIndex esta desactivado.
+ *
  * Es idempotente: los upserts van por nombre y los updates filtran por
  * `tipoId: { $exists: false }`. Correrlo dos veces no cambia nada.
  *
@@ -63,6 +66,14 @@ async function main(): Promise<void> {
   const costsCol = db.collection('costitems');
   const productsCol = db.collection('products');
 
+  // ---- 0. Indices --------------------------------------------------------
+  // En produccion autoIndex esta desactivado (app.module.ts), asi que los
+  // indices no se crean solos: hay que crearlos aca.
+  await tiposCol.createIndex({ nombre: 1 }, { unique: true });
+  await costsCol.createIndex({ tipoId: 1 });
+  await productsCol.createIndex({ tipoId: 1 });
+  console.log('[0/5] Indices asegurados (tipocostos.nombre unico, tipoId).');
+
   // ---- 1. Upsert de los tipos historicos -------------------------------
   const idPorSlug = new Map<string, mongoose.Types.ObjectId>();
   let tiposCreados = 0;
@@ -85,7 +96,7 @@ async function main(): Promise<void> {
     tiposCreados += 1;
   }
   console.log(
-    `[1/4] Tipos: ${tiposCreados} creados, ${TIPOS_HISTORICOS.length - tiposCreados} ya existian.`,
+    `[1/5] Tipos: ${tiposCreados} creados, ${TIPOS_HISTORICOS.length - tiposCreados} ya existian.`,
   );
 
   // ---- 2 y 3. Backfill de tipoId ---------------------------------------
@@ -105,8 +116,8 @@ async function main(): Promise<void> {
     return total;
   };
 
-  await backfill(costsCol, '2/4 costitems');
-  await backfill(productsCol, '3/4 products');
+  await backfill(costsCol, '2/5 costitems');
+  await backfill(productsCol, '3/5 products');
 
   // ---- 4. Verificacion --------------------------------------------------
   const huerfanos = async (
@@ -137,7 +148,7 @@ async function main(): Promise<void> {
         'Revisá los valores de "tipo" listados arriba y volvé a correr el script.',
     );
   }
-  console.log('[4/4] Verificacion OK: todos los documentos tienen tipoId.');
+  console.log('[4/5] Verificacion OK: todos los documentos tienen tipoId.');
 
   // ---- Opcional: limpieza del campo viejo ------------------------------
   if (cleanup) {
@@ -150,7 +161,7 @@ async function main(): Promise<void> {
       { $unset: { tipo: '' } },
     );
     console.log(
-      `[cleanup] Campo "tipo" eliminado de ${a.modifiedCount} costos y ${b.modifiedCount} productos.`,
+      `[5/5 cleanup] Campo "tipo" eliminado de ${a.modifiedCount} costos y ${b.modifiedCount} productos.`,
     );
   } else {
     console.log(
