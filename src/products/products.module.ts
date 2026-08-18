@@ -1,5 +1,5 @@
 
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { Product, ProductSchema } from './schemas/product.schema';
 import { ProductsController } from './products.controller';
@@ -16,7 +16,10 @@ import {
       { name: Product.name, schema: ProductSchema },
       { name: TipoCosto.name, schema: TipoCostoSchema },
     ]),
-    CostsModule,
+    // forwardRef en ambos extremos: el ciclo
+    // Products -> Costs -> Expenses -> Products es tambien un ciclo de require,
+    // no solo de inyeccion, asi que la referencia debe evaluarse perezosamente.
+    forwardRef(() => CostsModule),
   ],
   controllers: [ProductsController],
   providers: [ProductsService],

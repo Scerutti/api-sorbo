@@ -1,8 +1,10 @@
 
 import {
   BadRequestException,
+  forwardRef,
   HttpException,
   HttpStatus,
+  Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -39,6 +41,7 @@ export class ProductsService {
     private readonly productModel: Model<ProductDocument>,
     @InjectModel(TipoCosto.name)
     private readonly tipoCostoModel: Model<TipoCostoDocument>,
+    @Inject(forwardRef(() => CostsService))
     private readonly costsService: CostsService,
   ) {}
 
