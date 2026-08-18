@@ -9,6 +9,7 @@ import { CostsModule } from './costs/costs.module';
 import { ExpensesModule } from './expenses/expenses.module';
 import { ProductsModule } from './products/products.module';
 import { SalesModule } from './sales/sales.module';
+import { TiposCostoModule } from './tipos-costo/tipos-costo.module';
 import { UsersModule } from './users/users.module';
 
 @Module({
@@ -30,6 +31,7 @@ import { UsersModule } from './users/users.module';
       },
     }),
     AuthModule,
+    TiposCostoModule,
     ProductsModule,
     CostsModule,
     SalesModule,

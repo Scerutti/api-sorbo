@@ -1,11 +1,8 @@
 
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
-import {
-  CostItemType,
-  COST_ITEM_TYPE_VALUES,
-} from '../../shared/enums/cost-item-type.enum';
 import { GastoBase } from '../../expenses/schemas/gasto-base.schema';
+import { TipoCosto } from '../../tipos-costo/schemas/tipo-costo.schema';
 
 @Schema({
   timestamps: true,
@@ -17,8 +14,13 @@ export class CostItem {
   @Prop({ required: true, trim: true })
   nombre!: string;
 
-  @Prop({ required: true, type: String, enum: COST_ITEM_TYPE_VALUES })
-  tipo!: CostItemType;
+  @Prop({
+    type: Types.ObjectId,
+    ref: TipoCosto.name,
+    required: true,
+    index: true,
+  })
+  tipoId!: Types.ObjectId;
 
   @Prop({ required: true, min: 0 })
   valor!: number;

@@ -8,30 +8,38 @@ import {
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { plainToInstance } from 'class-transformer';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import { CreateCostDto } from './dto/create-cost.dto';
 import { CostResponseDto } from './dto/cost-response.dto';
 import { UpdateCostDto } from './dto/update-cost.dto';
 import { CostItem, CostItemDocument } from './schemas/cost-item.schema';
 import { CostItemContract } from '../shared/types/cost.types';
 import { GastosService } from '../expenses/gastos.service';
+import {
+  TipoCosto,
+  TipoCostoDocument,
+} from '../tipos-costo/schemas/tipo-costo.schema';
 
 @Injectable()
 export class CostsService {
   constructor(
     @InjectModel(CostItem.name)
     private readonly costModel: Model<CostItemDocument>,
+    @InjectModel(TipoCosto.name)
+    private readonly tipoCostoModel: Model<TipoCostoDocument>,
     private readonly gastosService: GastosService,
   ) {}
 
   async create(createCostDto: CreateCostDto): Promise<CostResponseDto> {
     try {
+      await this.assertTipoExists(createCostDto.tipoId);
+
       const componentes = createCostDto.componentes ?? [];
       const valor = await this.resolveValor(componentes, createCostDto.valor);
 
       const createdCost = await this.costModel.create({
         nombre: createCostDto.nombre,
-        tipo: createCostDto.tipo,
+        tipoId: new Types.ObjectId(createCostDto.tipoId),
         valor,
         componentes,
         descripcion: createCostDto.descripcion,
@@ -50,7 +58,8 @@ export class CostsService {
 
   async findAll(): Promise<CostResponseDto[]> {
     const costs = await this.costModel.find().exec();
-    return Promise.all(costs.map((cost) => this.mapToDto(cost)));
+    const tipoNombres = await this.loadTipoNombres();
+    return Promise.all(costs.map((cost) => this.mapToDto(cost, tipoNombres)));
   }
 
   async findOne(id: string): Promise<CostResponseDto> {
@@ -58,7 +67,6 @@ export class CostsService {
     if (!cost) {
       throw new NotFoundException('Costo no encontrado');
     }
-
     return this.mapToDto(cost);
   }
 
@@ -72,26 +80,24 @@ export class CostsService {
         throw new NotFoundException('Costo no encontrado');
       }
 
-      const payload: Partial<CostItem> = {};
+      const payload: Record<string, unknown> = {};
 
       if (typeof updateCostDto.nombre === 'string') {
         payload.nombre = updateCostDto.nombre;
       }
-      if (typeof updateCostDto.tipo !== 'undefined') {
-        payload.tipo = updateCostDto.tipo;
+      if (typeof updateCostDto.tipoId !== 'undefined') {
+        await this.assertTipoExists(updateCostDto.tipoId);
+        payload.tipoId = new Types.ObjectId(updateCostDto.tipoId);
       }
       if (typeof updateCostDto.descripcion !== 'undefined') {
         payload.descripcion = updateCostDto.descripcion;
       }
 
-      // Determinar la lista de componentes resultante: la nueva si vino en el
-      // payload, sino la que ya tenía el costo.
       const componentes =
         typeof updateCostDto.componentes !== 'undefined'
           ? updateCostDto.componentes
           : currentCost.componentes.map((c) => c.toString());
 
-      // Recalcular `valor` si cambian los componentes o si vino un valor manual.
       const valorChanged = typeof updateCostDto.valor !== 'undefined';
       const componentesChanged =
         typeof updateCostDto.componentes !== 'undefined';
@@ -104,14 +110,11 @@ export class CostsService {
       }
 
       if (componentesChanged) {
-        payload.componentes = componentes as unknown as CostItem['componentes'];
+        payload.componentes = componentes;
       }
 
       const updatedCost = await this.costModel
-        .findByIdAndUpdate(id, payload, {
-          new: true,
-          runValidators: true,
-        })
+        .findByIdAndUpdate(id, payload, { new: true, runValidators: true })
         .exec();
 
       if (!updatedCost) {
@@ -123,7 +126,6 @@ export class CostsService {
       if (error instanceof HttpException) {
         throw error;
       }
-
       throw new HttpException(
         this.extractMessage(error, 'No se pudo actualizar el costo'),
         HttpStatus.BAD_REQUEST,
@@ -138,11 +140,22 @@ export class CostsService {
     }
   }
 
-  /**
-   * Calcula el valor efectivo del costo:
-   * - Si tiene componentes (gastos base), suma sus valorUnitario actuales.
-   * - Si no, usa el valor manual (debe venir informado).
-   */
+  private async assertTipoExists(tipoId: string): Promise<void> {
+    const exists = await this.tipoCostoModel.exists({
+      _id: new Types.ObjectId(tipoId),
+    });
+    if (!exists) {
+      throw new BadRequestException('El tipo de costo indicado no existe.');
+    }
+  }
+
+  private async loadTipoNombres(): Promise<Map<string, string>> {
+    const tipos = await this.tipoCostoModel.find().select('nombre').exec();
+    return new Map(
+      tipos.map((tipo) => [tipo._id.toString(), tipo.nombre]),
+    );
+  }
+
   private async resolveValor(
     componentes: string[],
     valorManual?: number,
@@ -150,39 +163,39 @@ export class CostsService {
     if (componentes.length > 0) {
       return this.gastosService.sumValorUnitario(componentes);
     }
-
     if (typeof valorManual !== 'number' || Number.isNaN(valorManual)) {
       throw new BadRequestException(
         'Debe indicar un valor o al menos un gasto base (componente).',
       );
     }
-
     return valorManual;
   }
 
-  private async mapToDto(cost: CostItemDocument): Promise<CostResponseDto> {
+  private async mapToDto(
+    cost: CostItemDocument,
+    tipoNombres?: Map<string, string>,
+  ): Promise<CostResponseDto> {
     const plainCost = cost.toObject();
-
-    // Normalizar componentes a strings estables (los ObjectId de Mongoose se
-    // serializan de forma inconsistente vía class-transformer).
     const componentes = (cost.componentes ?? []).map((c) => c.toString());
 
-    // Recalcular dinámicamente el valor cuando el costo está compuesto por
-    // gastos base, de modo que cambios en esos gastos se reflejen al leer.
     if (componentes.length > 0) {
       plainCost.valor = await this.gastosService.sumValorUnitario(componentes);
     }
 
+    const tipoId = cost.tipoId ? cost.tipoId.toString() : '';
+    const nombres = tipoNombres ?? (await this.loadTipoNombres());
+
     const source: CostItemContract = {
       id: cost.id as string,
       nombre: plainCost.nombre,
-      tipo: plainCost.tipo,
+      tipoId,
+      tipoNombre: nombres.get(tipoId) ?? '',
       valor: plainCost.valor,
       componentes,
       descripcion: plainCost.descripcion,
       createdAt: (plainCost as { createdAt?: Date }).createdAt,
       updatedAt: (plainCost as { updatedAt?: Date }).updatedAt,
-    } as CostItemContract;
+    };
 
     return plainToInstance(CostResponseDto, source, {
       excludeExtraneousValues: true,
@@ -193,7 +206,6 @@ export class CostsService {
     if (error instanceof Error && error.message) {
       return error.message;
     }
-
     return fallback;
   }
 }

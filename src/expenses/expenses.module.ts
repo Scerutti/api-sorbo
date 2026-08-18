@@ -1,5 +1,5 @@
 
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { ProductsModule } from '../products/products.module';
 import { SalesModule } from '../sales/sales.module';
@@ -18,7 +18,8 @@ import { ExpensesReportService } from './expenses-report.service';
       { name: GastoBase.name, schema: GastoBaseSchema },
       { name: Inversion.name, schema: InversionSchema },
     ]),
-    ProductsModule,
+    // forwardRef: ProductsModule -> CostsModule -> ExpensesModule cierra un ciclo.
+    forwardRef(() => ProductsModule),
     SalesModule,
   ],
   controllers: [

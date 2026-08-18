@@ -1,6 +1,5 @@
 
 import { Expose, Transform, Type } from 'class-transformer';
-import { CostItemType } from '../../shared/enums/cost-item-type.enum';
 import { BaseResponseDto } from '../../shared/types/common.types';
 
 export class CostResponseDto implements BaseResponseDto {
@@ -11,7 +10,11 @@ export class CostResponseDto implements BaseResponseDto {
   nombre!: string;
 
   @Expose()
-  tipo!: CostItemType;
+  tipoId!: string;
+
+  // Nombre del tipo resuelto, para que el front no tenga que cruzar colecciones.
+  @Expose()
+  tipoNombre!: string;
 
   @Expose()
   @Type(() => Number)
