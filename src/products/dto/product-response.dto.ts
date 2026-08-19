@@ -1,6 +1,5 @@
 
-import { Expose, Transform, Type } from 'class-transformer';
-import { ProductType } from '../../shared/enums/product-type.enum';
+import { Expose, Type } from 'class-transformer';
 import { BaseResponseDto } from '../../shared/types/common.types';
 
 export class ProductResponseDto implements BaseResponseDto {
@@ -14,7 +13,11 @@ export class ProductResponseDto implements BaseResponseDto {
   descripcion?: string;
 
   @Expose()
-  tipo!: ProductType;
+  tipoId!: string;
+
+  // Nombre del tipo resuelto, para que el front no cruce colecciones.
+  @Expose()
+  tipoNombre!: string;
 
   @Expose()
   @Type(() => Number)
@@ -28,38 +31,17 @@ export class ProductResponseDto implements BaseResponseDto {
   @Type(() => Number)
   porcentajeGananciaMayorista!: number;
 
-  // costos y precioVenta se calculan en el frontend, pero se incluyen en la respuesta para compatibilidad
-  // Estos campos NO existen en la DB, se calculan basándose en CostItems y porcentajeGanancia
+  // Suma de los CostItem aplicables (globales + los del tipo del producto).
+  // Se calcula en ProductsService; no existe en la DB.
   @Expose()
-  @Transform(() => []) // Retorna array vacío, el frontend calculará los costos aplicables
-  costos!: string[];
+  @Type(() => Number)
+  costos!: number;
 
   @Expose()
-  @Transform(({ obj }) => {
-    // Calcular precioVenta básico: precioCosto * (1 + porcentajeGanancia / 100)
-    // El frontend deberá calcularlo correctamente con los costos aplicables
-    const typedObj = obj as {
-      precioCosto?: number;
-      porcentajeGanancia?: number;
-    };
-    const precioCosto = typedObj.precioCosto ?? 0;
-    const porcentajeGanancia = typedObj.porcentajeGanancia ?? 0;
-    return precioCosto * (1 + porcentajeGanancia / 100);
-  })
   @Type(() => Number)
   precioVenta!: number;
 
   @Expose()
-  @Transform(({ obj }) => {
-    // Calcular precioVentaMayorista: precioCosto * (1 + porcentajeGananciaMayorista / 100)
-    const typedObj = obj as {
-      precioCosto?: number;
-      porcentajeGananciaMayorista?: number;
-    };
-    const precioCosto = typedObj.precioCosto ?? 0;
-    const porcentajeGananciaMayorista = typedObj.porcentajeGananciaMayorista ?? 0;
-    return precioCosto * (1 + porcentajeGananciaMayorista / 100);
-  })
   @Type(() => Number)
   precioVentaMayorista!: number;
 

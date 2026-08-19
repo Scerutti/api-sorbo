@@ -1,5 +1,5 @@
 
-import { Injectable } from '@nestjs/common';
+import { forwardRef, Inject, Injectable } from '@nestjs/common';
 import * as ExcelJS from 'exceljs';
 import { GastoClasificacion } from '../shared/enums/gasto-clasificacion.enum';
 import { ProductsService } from '../products/products.service';
@@ -43,6 +43,7 @@ export class ExpensesReportService {
   constructor(
     private readonly gastosService: GastosService,
     private readonly inversionesService: InversionesService,
+    @Inject(forwardRef(() => ProductsService))
     private readonly productsService: ProductsService,
     private readonly salesService: SalesService,
   ) {}

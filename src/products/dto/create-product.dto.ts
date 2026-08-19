@@ -1,14 +1,13 @@
 
 import { Type } from 'class-transformer';
 import {
-  IsEnum,
   IsInt,
+  IsMongoId,
   IsOptional,
   IsString,
   Max,
   Min,
 } from 'class-validator';
-import { ProductType } from '../../shared/enums/product-type.enum';
 
 export class CreateProductDto {
   @IsString()
@@ -18,8 +17,9 @@ export class CreateProductDto {
   @IsString()
   descripcion?: string;
 
-  @IsEnum(ProductType)
-  tipo!: ProductType;
+  // Tipo de costo asignado: determina que CostItem se le suman al producto.
+  @IsMongoId()
+  tipoId!: string;
 
   @Type(() => Number)
   @Min(0)
@@ -35,7 +35,7 @@ export class CreateProductDto {
   @Max(1000)
   porcentajeGananciaMayorista!: number;
 
-  // costos y precioVenta se calculan en el frontend, NO se envían al backend
+  // costos y precioVenta se calculan en ProductsService, NO se envían.
 
   @Type(() => Number)
   @IsInt()

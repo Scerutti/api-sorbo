@@ -22,7 +22,7 @@ async function bootstrap() {
 
   await app.register(helmet, {
     global: true,
-    crossOriginResourcePolicy: { policy: "cross-origin"},
+    crossOriginResourcePolicy: { policy: "cross-origin" },
     contentSecurityPolicy: contentSecurityPolicy
   });
 

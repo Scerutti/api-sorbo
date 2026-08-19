@@ -1,6 +1,8 @@
 import {
+  forwardRef,
   HttpException,
   HttpStatus,
+  Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -9,6 +11,7 @@ import { plainToInstance } from 'class-transformer';
 import { Model } from 'mongoose';
 import * as ExcelJS from 'exceljs';
 import { Product, ProductDocument } from '../products/schemas/product.schema';
+import { ProductsService } from '../products/products.service';
 import { CreateSaleDto, CreateSaleItemDto } from './dto/create-sale.dto';
 import { SaleResponseDto } from './dto/sale-response.dto';
 import { UpdateSaleDto } from './dto/update-sale.dto';
@@ -29,6 +32,8 @@ export class SalesService {
     @InjectModel(Sale.name) private readonly saleModel: Model<SaleDocument>,
     @InjectModel(Product.name)
     private readonly productModel: Model<ProductDocument>,
+    @Inject(forwardRef(() => ProductsService))
+    private readonly productsService: ProductsService,
   ) {}
 
   async create(
@@ -283,6 +288,9 @@ export class SalesService {
     items: CreateSaleItemDto[],
     esMayorista: boolean,
   ): Promise<Sale['items']> {
+    // Contexto de precios resuelto una sola vez para toda la venta.
+    const pricing = await this.productsService.buildPricingContext();
+
     return Promise.all(
       items.map(async (item) => {
         const product = await this.productModel.findById(item.productId).exec();
@@ -298,16 +306,22 @@ export class SalesService {
             ? product.porcentajeGananciaMayorista
             : product.porcentajeGanancia;
 
-        // Calcular precioVenta del producto: precioCosto * (1 + porcentajeGanancia / 100)
-        // El frontend puede enviar precioUnitario, si no, se calcula aquí
+        // Costos aplicables al producto (globales + los de su tipo).
+        const costos = this.productsService.computeCostos(
+          product.tipoId ? product.tipoId.toString() : '',
+          pricing,
+        );
+
+        // precioVenta = (precioCosto + costos) * (1 + porcentajeGanancia / 100)
+        // El frontend puede enviar precioUnitario; si no, se calcula aquí.
         const precioVentaCalculado =
-          product.precioCosto * (1 + porcentajeGanancia / 100);
+          (product.precioCosto + costos) * (1 + porcentajeGanancia / 100);
         const precioUnitario = item.precioUnitario ?? precioVentaCalculado;
 
         // Construir snapshot con ambos porcentajes si es mayorista
         const snapshot: Sale['items'][0]['snapshot'] = {
           precioCosto: product.precioCosto,
-          costos: 0, // Nota: Los costos se calculan en el frontend, aquí se guarda 0 como placeholder
+          costos, // Congelado al momento de la venta para auditoría histórica
           porcentajeGanancia: product.porcentajeGanancia,
           precioVenta: precioUnitario, // Usar el precio unitario calculado/usado
         };

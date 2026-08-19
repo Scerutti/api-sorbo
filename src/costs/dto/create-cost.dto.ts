@@ -2,7 +2,6 @@
 import { Type } from 'class-transformer';
 import {
   IsArray,
-  IsEnum,
   IsMongoId,
   IsNumber,
   IsOptional,
@@ -10,15 +9,14 @@ import {
   Min,
   MinLength,
 } from 'class-validator';
-import { CostItemType } from '../../shared/enums/cost-item-type.enum';
 
 export class CreateCostDto {
   @IsString()
   @MinLength(2)
   nombre!: string;
 
-  @IsEnum(CostItemType)
-  tipo!: CostItemType;
+  @IsMongoId()
+  tipoId!: string;
 
   // Opcional: si se envían `componentes`, el `valor` se calcula en el backend.
   // Si no hay componentes, `valor` es obligatorio (validado en el service).

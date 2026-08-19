@@ -1,14 +1,11 @@
 
 import { MongoId } from './common.types';
 
-export interface CostItemContract {
+export interface TipoCostoContract {
   id: MongoId;
   nombre: string;
-  tipoId: MongoId;
-  tipoNombre: string;
-  valor: number;
-  componentes?: string[] | undefined;
   descripcion?: string | undefined;
+  aplicaATodos: boolean;
   createdAt?: Date | undefined;
   updatedAt?: Date | undefined;
 }

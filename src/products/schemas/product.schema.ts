@@ -1,10 +1,7 @@
 
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { HydratedDocument } from 'mongoose';
-import {
-  ProductType,
-  PRODUCT_TYPE_VALUES,
-} from '../../shared/enums/product-type.enum';
+import { HydratedDocument, Types } from 'mongoose';
+import { TipoCosto } from '../../tipos-costo/schemas/tipo-costo.schema';
 
 @Schema({
   timestamps: true,
@@ -19,8 +16,14 @@ export class Product {
   @Prop({ type: String, trim: true, required: false })
   descripcion?: string;
 
-  @Prop({ required: true, type: String, enum: PRODUCT_TYPE_VALUES })
-  tipo!: ProductType;
+  // Tipo de costo asignado al producto: determina que CostItem se le suman.
+  @Prop({
+    type: Types.ObjectId,
+    ref: TipoCosto.name,
+    required: true,
+    index: true,
+  })
+  tipoId!: Types.ObjectId;
 
   @Prop({ required: true, min: 0 })
   precioCosto!: number;
@@ -31,7 +34,8 @@ export class Product {
   @Prop({ required: true, min: 0, default: 0 })
   porcentajeGananciaMayorista!: number;
 
-  // costos y precioVenta se calculan en el frontend, NO se guardan en DB
+  // costos y precioVenta se calculan en ProductsService a partir de los
+  // CostItem aplicables, NO se guardan en DB.
 
   @Prop({ required: true, min: 0, default: 0 })
   stock!: number;
