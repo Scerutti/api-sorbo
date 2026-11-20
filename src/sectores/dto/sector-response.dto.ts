@@ -13,9 +13,6 @@ export class SectorResponseDto implements BaseResponseDto {
   descripcion?: string;
 
   @Expose()
-  esGeneral!: boolean;
-
-  @Expose()
   activo!: boolean;
 
   @Expose()

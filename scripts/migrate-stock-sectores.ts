@@ -1,52 +1,28 @@
 /**
- * Migracion: stock global -> stock por sector.
+ * Preparacion de la base para el stock por sector.
  *
- * Que hace, en orden:
- *   1. Crea los indices (en produccion autoIndex esta desactivado).
- *   2. Upsert por nombre de los sectores iniciales, incluido el deposito
- *      general donde entra la compra de insumos.
- *   3. Siembra un StockSector por producto en el deposito general, con la
- *      cantidad que hoy tiene Product.stock.
- *   4. Deja un movimiento de ajuste por cada siembra, para que el libro
- *      explique de donde salio ese saldo inicial.
- *   5. Informa cuantos usuarios admin hay, porque la separacion por roles de
- *      la fase siguiente los necesita.
+ * Que hace:
+ *   1. Crea los indices de las colecciones nuevas. En produccion autoIndex
+ *      esta desactivado (app.module.ts), asi que no se crean solos.
+ *   2. Informa el estado: sectores cargados, productos con stock todavia sin
+ *      repartir, usuarios admin y usuarios sin sector asignado.
  *
- * Es idempotente: los sectores se upsertean por nombre y la siembra usa
- * $setOnInsert, asi que correrlo dos veces no duplica ni pisa saldos.
+ * Lo que NO hace, a proposito:
+ *   - No crea sectores. Los sectores los das de alta vos por el CRUD
+ *     (POST /api/v1/sectores) o desde la pantalla de sectores.
+ *   - No siembra saldos. El stock entra a cada sector con un movimiento de
+ *     entrada, eligiendo el sector destino.
+ *   - No toca Product.stock, que sigue siendo la fuente de verdad de las
+ *     lecturas hasta que se repartan los saldos.
  *
- * NO toca Product.stock. Hasta que la fase 3 pase las lecturas y las ventas
- * al stock por sector, Product.stock sigue siendo la fuente de verdad y este
- * script solo agrega datos en paralelo. Por eso no tiene --cleanup todavia.
+ * Es idempotente: se puede correr las veces que haga falta, y sirve como
+ * chequeo previo antes de pasar las lecturas al stock por sector.
  *
  * Uso:
  *   npm run migrate:stock-sectores
  */
 import 'dotenv/config';
 import mongoose from 'mongoose';
-
-const SECTORES_INICIALES: Array<{
-  nombre: string;
-  esGeneral: boolean;
-  descripcion: string;
-}> = [
-  {
-    nombre: 'Depósito General',
-    esGeneral: true,
-    descripcion:
-      'Depósito central. La compra de insumos entra acá antes de repartirse.',
-  },
-  {
-    nombre: 'Concepción del Uruguay',
-    esGeneral: false,
-    descripcion: '',
-  },
-  {
-    nombre: 'Villaguay',
-    esGeneral: false,
-    descripcion: '',
-  },
-];
 
 async function main(): Promise<void> {
   const uri = process.env.MONGO_URI;
@@ -70,10 +46,6 @@ async function main(): Promise<void> {
 
   // ---- 1. Indices --------------------------------------------------------
   await sectoresCol.createIndex({ nombre: 1 }, { unique: true });
-  await sectoresCol.createIndex(
-    { esGeneral: 1 },
-    { unique: true, partialFilterExpression: { esGeneral: true } },
-  );
   await stockCol.createIndex({ productId: 1, sectorId: 1 }, { unique: true });
   await stockCol.createIndex({ productId: 1 });
   await stockCol.createIndex({ sectorId: 1 });
@@ -83,107 +55,59 @@ async function main(): Promise<void> {
   await movimientosCol.createIndex({ saleId: 1 });
   await movimientosCol.createIndex({ fecha: -1 });
   await usersCol.createIndex({ sectorId: 1 });
-  console.log('[1/5] Indices asegurados.');
+  console.log('[1/2] Indices asegurados.');
 
-  // ---- 2. Sectores iniciales --------------------------------------------
-  const idPorNombre = new Map<string, mongoose.Types.ObjectId>();
-  let sectoresCreados = 0;
-
-  for (const sector of SECTORES_INICIALES) {
-    const existente = await sectoresCol.findOne({ nombre: sector.nombre });
-    if (existente) {
-      idPorNombre.set(sector.nombre, existente._id as mongoose.Types.ObjectId);
-      continue;
-    }
-
-    const now = new Date();
-    const res = await sectoresCol.insertOne({
-      nombre: sector.nombre,
-      ...(sector.descripcion ? { descripcion: sector.descripcion } : {}),
-      esGeneral: sector.esGeneral,
-      activo: true,
-      createdAt: now,
-      updatedAt: now,
-    });
-    idPorNombre.set(sector.nombre, res.insertedId as mongoose.Types.ObjectId);
-    sectoresCreados += 1;
-  }
-
-  console.log(
-    `[2/5] Sectores: ${sectoresCreados} creados, ${
-      SECTORES_INICIALES.length - sectoresCreados
-    } ya existian.`,
-  );
-
-  const idGeneral = idPorNombre.get('Depósito General');
-  if (!idGeneral) {
-    throw new Error('No se pudo resolver el id del deposito general.');
-  }
-
-  // ---- 3 y 4. Siembra de saldos + movimiento de ajuste -------------------
-  const productos = await productsCol
-    .find({}, { projection: { _id: 1, nombre: 1, stock: 1 } })
+  // ---- 2. Estado actual --------------------------------------------------
+  const sectores = await sectoresCol
+    .find({}, { projection: { nombre: 1, activo: 1 } })
     .toArray();
 
-  let sembrados = 0;
-  let yaExistian = 0;
-
-  for (const producto of productos) {
-    const cantidad = typeof producto.stock === 'number' ? producto.stock : 0;
-    const now = new Date();
-
-    const res = await stockCol.updateOne(
-      { productId: producto._id, sectorId: idGeneral },
-      {
-        $setOnInsert: {
-          productId: producto._id,
-          sectorId: idGeneral,
-          cantidad,
-          createdAt: now,
-          updatedAt: now,
-        },
-      },
-      { upsert: true },
+  console.log(`\n[2/2] Estado de la base\n`);
+  console.log(`Sectores cargados: ${sectores.length}`);
+  for (const sector of sectores) {
+    const saldos = await stockCol.countDocuments({
+      sectorId: sector._id,
+      cantidad: { $gt: 0 },
+    });
+    const estado = sector.activo === false ? ' (inactivo)' : '';
+    console.log(
+      `  - ${String(sector.nombre)}${estado}: ${saldos} producto(s) con saldo`,
     );
+  }
+  if (sectores.length === 0) {
+    console.log(
+      '  (ninguno) Crealos con POST /api/v1/sectores antes de cargar stock.',
+    );
+  }
 
-    if (res.upsertedCount === 0) {
-      yaExistian += 1;
+  // Productos cuyo stock historico todavia no se repartio en ningun sector.
+  const productos = await productsCol
+    .find({}, { projection: { nombre: 1, stock: 1 } })
+    .toArray();
+
+  let sinRepartir = 0;
+  for (const producto of productos) {
+    const stockHistorico =
+      typeof producto.stock === 'number' ? producto.stock : 0;
+    if (stockHistorico <= 0) {
       continue;
     }
-
-    sembrados += 1;
-
-    // Un saldo que aparece sin movimiento que lo explique rompe el libro.
-    // Solo se registra si hubo unidades: el libro exige cantidad >= 1.
-    if (cantidad > 0) {
-      await movimientosCol.insertOne({
-        tipo: 'ajuste',
-        productId: producto._id,
-        sectorDestinoId: idGeneral,
-        cantidad,
-        motivo: 'Saldo inicial por migración a stock por sector',
-        fecha: now,
-        createdAt: now,
-        updatedAt: now,
-      });
+    const tieneSaldo = await stockCol.countDocuments({
+      productId: producto._id,
+      cantidad: { $gt: 0 },
+    });
+    if (tieneSaldo === 0) {
+      sinRepartir += 1;
     }
   }
 
-  console.log(
-    `[3/5] Saldos sembrados en el deposito general: ${sembrados} producto(s).`,
-  );
-  console.log(
-    `[4/5] Ya tenian saldo y no se tocaron: ${yaExistian} producto(s).`,
-  );
-
-  // ---- 5. Verificacion y estado de los roles -----------------------------
-  const totalProductos = productos.length;
-  const totalSaldos = await stockCol.countDocuments({ sectorId: idGeneral });
-
-  if (totalSaldos < totalProductos) {
-    throw new Error(
-      `Migracion incompleta: ${totalProductos} producto(s) pero solo ` +
-        `${totalSaldos} saldo(s) en el deposito general.`,
+  console.log(`\nProductos con stock sin repartir: ${sinRepartir}`);
+  if (sinRepartir > 0) {
+    console.log(
+      'Esos productos tienen unidades en Product.stock pero ningun saldo por\n' +
+        'sector. Cargalos con un movimiento de entrada por sector antes de\n' +
+        'pasar las lecturas al stock por sector, o el catálogo los va a\n' +
+        'mostrar en cero.',
     );
   }
 
@@ -192,25 +116,24 @@ async function main(): Promise<void> {
     sectorId: { $exists: false },
   });
 
-  console.log('[5/5] Verificacion OK: todos los productos tienen saldo.');
   console.log(`\nUsuarios con rol admin: ${admins}`);
   if (admins === 0) {
     console.warn(
-      'ATENCION: no hay ningun usuario admin. La separacion por roles de la\n' +
-        'fase siguiente dejaria el stock inaccesible. Asignale el rol admin a\n' +
-        'alguien antes de avanzar:\n' +
+      'ATENCION: no hay ningun usuario admin. La separacion por roles dejaria\n' +
+        'el stock inaccesible. Asignale el rol a alguien antes de avanzar:\n' +
         '  db.users.updateOne({ email: "TU_EMAIL" }, { $addToSet: { roles: "admin" } })',
     );
   }
+
   console.log(`Usuarios sin sector asignado: ${sinSector}`);
   if (sinSector > 0) {
     console.log(
-      'Asignales un sector desde la API (PATCH /users/:id con sectorId) o\n' +
-        'esperá a la pantalla de usuarios de la fase 6.',
+      'Asignales un sector con PATCH /api/v1/users/:id { "sectorId": "..." }\n' +
+        'o desde la pantalla de usuarios.',
     );
   }
 
-  console.log('\nMigracion completada.');
+  console.log('\nListo.');
 }
 
 main()
@@ -219,7 +142,7 @@ main()
     process.exit(0);
   })
   .catch(async (error: unknown) => {
-    console.error('\nLa migracion fallo:', error);
+    console.error('\nFallo la preparacion:', error);
     await mongoose.disconnect();
     process.exit(1);
   });

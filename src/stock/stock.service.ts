@@ -35,7 +35,6 @@ const LIMITE_MOVIMIENTOS_POR_DEFECTO = 100;
 
 interface SectorResuelto {
   nombre: string;
-  esGeneral: boolean;
   activo: boolean;
 }
 
@@ -126,7 +125,6 @@ export class StockService {
         return {
           sectorId: idSector,
           sectorNombre: sector.nombre,
-          esGeneral: sector.esGeneral,
           cantidad: porClave.get(`${idProducto}|${idSector}`) ?? 0,
         };
       });
@@ -525,7 +523,7 @@ export class StockService {
   private async buildNombres(): Promise<NombresContext> {
     const [productos, sectores] = await Promise.all([
       this.productModel.find().select('nombre').exec(),
-      this.sectorModel.find().select('nombre esGeneral activo').exec(),
+      this.sectorModel.find().select('nombre activo').exec(),
     ]);
 
     return {
@@ -537,7 +535,6 @@ export class StockService {
           sector._id.toString(),
           {
             nombre: sector.nombre,
-            esGeneral: sector.esGeneral,
             activo: sector.activo,
           },
         ]),

@@ -32,7 +32,6 @@ export interface MovimientoStockContract {
 export interface StockResumenSectorContract {
   sectorId: MongoId;
   sectorNombre: string;
-  esGeneral: boolean;
   cantidad: number;
 }
 
