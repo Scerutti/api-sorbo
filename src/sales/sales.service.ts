@@ -136,14 +136,18 @@ export class SalesService {
   async update(
     id: string,
     updateSaleDto: UpdateSaleDto,
-    usuarioId?: string,
+    usuario: UserDocument,
   ): Promise<SaleResponseDto> {
+    const usuarioId = String(usuario.id ?? usuario._id);
+
     try {
       // Obtener la venta actual para mantener esMayorista si no se actualiza
       const currentSale = await this.saleModel.findById(id).exec();
       if (!currentSale) {
         throw new NotFoundException('Venta no encontrada');
       }
+
+      this.assertPuedeOperarVenta(currentSale, usuario);
 
       const payload: Partial<Sale> = {};
 
@@ -160,34 +164,65 @@ export class SalesService {
         payload.esMayorista = updateSaleDto.esMayorista;
       }
 
+      // El stock se mueve contra el sector guardado en la venta, no contra
+      // el del usuario que edita: las unidades tienen que volver al mismo
+      // lugar de donde salieron.
+      const sectorId = this.sectorDeLaVenta(currentSale);
+      let stockMovido = false;
+
       if (Array.isArray(updateSaleDto.items)) {
         const items = await this.buildItems(updateSaleDto.items, esMayorista);
         payload.items = items;
         payload.total = this.calculateTotal(items);
 
-        // El stock se mueve contra el sector guardado en la venta, no contra
-        // el del usuario que edita: las unidades tienen que volver al mismo
-        // lugar de donde salieron.
-        const sectorId = this.sectorDeLaVenta(currentSale);
         if (sectorId) {
           await this.aplicarDiferenciaDeStock(
             currentSale.items,
             items,
             sectorId,
-            String(currentSale.id),
+            id,
+            usuarioId,
+          );
+          stockMovido = true;
+        }
+      }
+
+      // Si la venta no se puede guardar, el stock ya movido se deshace: si
+      // no, el sector quedaria con unidades descontadas (o repuestas) por una
+      // edicion que nunca se registro.
+      const revertirStock = async (): Promise<void> => {
+        if (stockMovido && sectorId && payload.items) {
+          await this.aplicarDiferenciaDeStock(
+            payload.items,
+            currentSale.items,
+            sectorId,
+            id,
             usuarioId,
           );
         }
+      };
 
-        await this.ajustarSoldCountPorDiferencia(currentSale.items, items);
+      let updatedSale: SaleDocument | null;
+      try {
+        updatedSale = await this.saleModel
+          .findByIdAndUpdate(id, payload, { new: true, runValidators: true })
+          .exec();
+      } catch (error) {
+        await revertirStock();
+        throw error;
       }
 
-      const updatedSale = await this.saleModel
-        .findByIdAndUpdate(id, payload, { new: true, runValidators: true })
-        .exec();
-
       if (!updatedSale) {
+        await revertirStock();
         throw new NotFoundException('Venta no encontrada');
+      }
+
+      // soldCount recien cuando la edicion quedo guardada.
+      if (payload.items) {
+        await this.ajustarSoldCountPorDiferencia(
+          currentSale.items,
+          payload.items,
+        );
       }
 
       return this.mapToDto(updatedSale);
@@ -203,7 +238,15 @@ export class SalesService {
     }
   }
 
-  async remove(id: string, usuarioId?: string): Promise<void> {
+  async remove(id: string, usuario: UserDocument): Promise<void> {
+    const usuarioId = String(usuario.id ?? usuario._id);
+
+    const sale = await this.saleModel.findById(id).exec();
+    if (!sale) {
+      throw new NotFoundException('Venta no encontrada');
+    }
+    this.assertPuedeOperarVenta(sale, usuario);
+
     const deletedSale = await this.saleModel.findByIdAndDelete(id).exec();
     if (!deletedSale) {
       throw new NotFoundException('Venta no encontrada');
@@ -493,6 +536,29 @@ export class SalesService {
     }
 
     return dto.sectorId;
+  }
+
+  /**
+   * Editar o anular una venta mueve stock del sector de esa venta. Con la
+   * misma regla que el alta, solo un admin puede tocar ventas de un sector
+   * que no es el suyo. Las ventas viejas sin sector quedan solo para admin,
+   * porque no hay forma de saber a quien le pertenecen.
+   */
+  private assertPuedeOperarVenta(
+    sale: SaleDocument,
+    usuario: UserDocument,
+  ): void {
+    if (usuario.roles.includes(UserRole.ADMIN)) {
+      return;
+    }
+
+    const sectorVenta = this.sectorDeLaVenta(sale);
+    const propio = usuario.sectorId ? usuario.sectorId.toString() : undefined;
+    if (!sectorVenta || sectorVenta !== propio) {
+      throw new ForbiddenException(
+        'Solo un admin puede modificar o anular una venta de otro sector.',
+      );
+    }
   }
 
   /**

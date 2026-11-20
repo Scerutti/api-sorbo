@@ -87,11 +87,7 @@ export class SalesController {
     @Body() updateSaleDto: UpdateSaleDto,
     @GetUser() user: UserDocument,
   ): Promise<SaleResponseDto> {
-    return this.salesService.update(
-      id,
-      updateSaleDto,
-      String(user.id ?? user._id),
-    );
+    return this.salesService.update(id, updateSaleDto, user);
   }
 
   @Delete(':id')
@@ -105,6 +101,6 @@ export class SalesController {
     @Param('id') id: string,
     @GetUser() user: UserDocument,
   ): Promise<void> {
-    await this.salesService.remove(id, String(user.id ?? user._id));
+    await this.salesService.remove(id, user);
   }
 }
