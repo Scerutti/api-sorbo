@@ -3,6 +3,7 @@ import { forwardRef, Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { Product, ProductSchema } from '../products/schemas/product.schema';
 import { ProductsModule } from '../products/products.module';
+import { StockModule } from '../stock/stock.module';
 import { Sale, SaleSchema } from './schemas/sale.schema';
 import { SalesController } from './sales.controller';
 import { SalesService } from './sales.service';
@@ -16,6 +17,7 @@ import { SalesService } from './sales.service';
     // forwardRef: ExpensesModule -> SalesModule -> ProductsModule -> CostsModule
     // -> ExpensesModule cierra un ciclo.
     forwardRef(() => ProductsModule),
+    StockModule,
   ],
   controllers: [SalesController],
   providers: [SalesService],

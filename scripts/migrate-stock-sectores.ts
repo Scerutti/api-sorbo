@@ -111,6 +111,21 @@ async function main(): Promise<void> {
     );
   }
 
+  // Ventas anteriores al stock por sector. No se les puede asignar uno sin
+  // inventar de donde salio la mercaderia, asi que editarlas o anularlas no
+  // mueve saldos. Quedan como historia.
+  const ventasSinSector = await db
+    .collection('sales')
+    .countDocuments({ sectorId: { $exists: false } });
+
+  console.log(`\nVentas sin sector (anteriores al cambio): ${ventasSinSector}`);
+  if (ventasSinSector > 0) {
+    console.log(
+      'Editarlas o anularlas no va a mover stock de ningun sector, porque no\n' +
+        'hay registro de cual fue. Las nuevas si lo guardan.',
+    );
+  }
+
   const admins = await usersCol.countDocuments({ roles: 'admin' });
   const sinSector = await usersCol.countDocuments({
     sectorId: { $exists: false },

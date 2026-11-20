@@ -26,20 +26,25 @@ import { SalesService } from './sales.service';
 
 @ApiTags('sales')
 @Controller('sales')
+// Las ventas mueven stock de un sector concreto, asi que todas las rutas
+// necesitan saber quien opera. Antes solo el alta estaba protegida.
+@UseGuards(JwtAuthGuard)
 @UseInterceptors(ClassSerializerInterceptor)
 export class SalesController {
   constructor(private readonly salesService: SalesService) {}
 
   @Post()
-  @UseGuards(JwtAuthGuard)
   @ApiOperation({ summary: 'Registrar una venta' })
   @ApiResponse({ status: HttpStatus.CREATED, type: SaleResponseDto })
+  @ApiResponse({
+    status: HttpStatus.CONFLICT,
+    description: 'Stock insuficiente en el sector o sector inactivo',
+  })
   async create(
     @Body() createSaleDto: CreateSaleDto,
     @GetUser() user: UserDocument,
   ): Promise<SaleResponseDto> {
-    const vendedorId = String(user.id ?? user._id);
-    return this.salesService.create(createSaleDto, vendedorId);
+    return this.salesService.create(createSaleDto, user);
   }
 
   @Get()
@@ -80,8 +85,13 @@ export class SalesController {
   async update(
     @Param('id') id: string,
     @Body() updateSaleDto: UpdateSaleDto,
+    @GetUser() user: UserDocument,
   ): Promise<SaleResponseDto> {
-    return this.salesService.update(id, updateSaleDto);
+    return this.salesService.update(
+      id,
+      updateSaleDto,
+      String(user.id ?? user._id),
+    );
   }
 
   @Delete(':id')
@@ -91,7 +101,10 @@ export class SalesController {
     status: HttpStatus.NO_CONTENT,
     description: 'Venta eliminada correctamente',
   })
-  async remove(@Param('id') id: string): Promise<void> {
-    await this.salesService.remove(id);
+  async remove(
+    @Param('id') id: string,
+    @GetUser() user: UserDocument,
+  ): Promise<void> {
+    await this.salesService.remove(id, String(user.id ?? user._id));
   }
 }
