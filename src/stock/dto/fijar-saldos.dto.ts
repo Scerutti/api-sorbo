@@ -17,6 +17,16 @@ export class SaldoSectorDto {
   @IsInt()
   @Min(0)
   cantidad!: number;
+
+  /**
+   * Saldo que el usuario tenía en pantalla al editar. Si el de la base ya no
+   * es ese (una venta entró mientras el formulario estaba abierto), el
+   * backend responde 409 en vez de pisar el cambio.
+   */
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  esperado!: number;
 }
 
 /**

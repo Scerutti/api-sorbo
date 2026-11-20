@@ -367,9 +367,11 @@ export class StockService {
    * serie, y cada uno hacía unas ocho consultas a Atlas.
    *
    * Lecturas en paralelo, escrituras en paralelo y el libro en un insertMany.
-   * Cada escritura exige que el saldo siga siendo el que se leyó: si una
-   * venta lo cambió en el medio, se deshacen las que ya entraron y se
-   * responde 409, así nunca queda un reparto a medias.
+   * Cada sector trae el saldo que el usuario tenía en pantalla (`esperado`),
+   * y cada escritura exige que el saldo siga siendo ese. Si una venta lo
+   * cambió mientras el formulario estaba abierto, o entre la lectura y la
+   * escritura, responde 409; en el segundo caso antes deshace las escrituras
+   * que ya entraron, así nunca queda un reparto a medias.
    */
   async fijarSaldos(
     dto: FijarSaldosDto,
@@ -413,10 +415,25 @@ export class StockService {
       saldos.map((s) => [s.sectorId.toString(), s]),
     );
 
+    const conflicto = () =>
+      new ConflictException(
+        `El stock de "${producto.nombre}" cambió mientras lo editabas (por ejemplo, por una venta). Volvé a abrir el producto y probá de nuevo.`,
+      );
+
+    // El reparto se calcula sobre lo que el usuario vio, no sobre lo que hay
+    // ahora: si difieren, alguien movió stock mientras el formulario estaba
+    // abierto, y aplicar el pedido pisaría ese movimiento sin aviso.
+    const desactualizado = dto.saldos.some(
+      (s) => (saldoPorSector.get(s.sectorId)?.cantidad ?? 0) !== s.esperado,
+    );
+    if (desactualizado) {
+      throw conflicto();
+    }
+
     const cambios: CambioSaldo[] = dto.saldos
       .map((s) => ({
         sectorId: s.sectorId,
-        actual: saldoPorSector.get(s.sectorId)?.cantidad ?? 0,
+        actual: s.esperado,
         nuevo: s.cantidad,
       }))
       .filter((c) => c.nuevo !== c.actual);
@@ -456,9 +473,7 @@ export class StockService {
         if (error) {
           throw error.reason;
         }
-        throw new ConflictException(
-          `El stock de "${producto.nombre}" cambió mientras lo editabas (por ejemplo, por una venta). Volvé a abrir el producto y probá de nuevo.`,
-        );
+        throw conflicto();
       }
 
       resultados.forEach((r) => {
