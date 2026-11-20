@@ -7,6 +7,7 @@ import {
   Get,
   HttpStatus,
   Post,
+  Put,
   Query,
   UseGuards,
   UseInterceptors,
@@ -19,6 +20,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { UserRole } from '../shared/enums/user-role.enum';
 import type { UserDocument } from '../users/schemas/user.schema';
 import { CreateMovimientoDto } from './dto/create-movimiento.dto';
+import { FijarSaldosDto } from './dto/fijar-saldos.dto';
 import { MovimientoStockResponseDto } from './dto/movimiento-stock-response.dto';
 import { QueryMovimientosDto } from './dto/query-movimientos.dto';
 import { QueryResumenDto } from './dto/query-resumen.dto';
@@ -115,6 +117,30 @@ export class StockController {
       createMovimientoDto,
       usuarioId,
     );
+  }
+
+  @Put('saldos')
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({
+    summary: 'Fijar el reparto de un producto entre sectores',
+    description:
+      'Solo admin. Recibe el saldo final de cada sector y registra en el libro las transferencias, entradas y ajustes que llevan a ese reparto, todo en un request.',
+  })
+  @ApiResponse({
+    status: HttpStatus.OK,
+    type: StockSectorResponseDto,
+    isArray: true,
+  })
+  @ApiResponse({
+    status: HttpStatus.CONFLICT,
+    description: 'Sector inactivo, o el saldo cambió mientras se editaba',
+  })
+  async fijarSaldos(
+    @Body() fijarSaldosDto: FijarSaldosDto,
+    @GetUser() user: UserDocument,
+  ): Promise<StockSectorResponseDto[]> {
+    const usuarioId = String(user.id ?? user._id);
+    return this.stockService.fijarSaldos(fijarSaldosDto, usuarioId);
   }
 
   /**

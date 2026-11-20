@@ -17,6 +17,7 @@ import {
   StockSectorContract,
 } from '../shared/types/stock.types';
 import { CreateMovimientoDto } from './dto/create-movimiento.dto';
+import { FijarSaldosDto } from './dto/fijar-saldos.dto';
 import { MovimientoStockResponseDto } from './dto/movimiento-stock-response.dto';
 import { QueryMovimientosDto } from './dto/query-movimientos.dto';
 import { QueryStockDto } from './dto/query-stock.dto';
@@ -30,6 +31,7 @@ import {
   StockSector,
   StockSectorDocument,
 } from './schemas/stock-sector.schema';
+import { CambioSaldo, planificarReparto } from './reparto';
 
 const LIMITE_MOVIMIENTOS_POR_DEFECTO = 100;
 
@@ -81,7 +83,9 @@ export class StockService {
 
     const [saldos, nombres] = await Promise.all([
       this.stockSectorModel.find(filtro).exec(),
-      this.buildNombres(),
+      this.buildNombres(
+        query.productId ? { productIds: [query.productId] } : undefined,
+      ),
     ]);
 
     return saldos
@@ -357,6 +361,150 @@ export class StockService {
     });
   }
 
+  /**
+   * Deja los saldos de un producto como pide el formulario del producto, en
+   * un solo request. Antes el front mandaba un movimiento por sector, en
+   * serie, y cada uno hacía unas ocho consultas a Atlas.
+   *
+   * Lecturas en paralelo, escrituras en paralelo y el libro en un insertMany.
+   * Cada escritura exige que el saldo siga siendo el que se leyó: si una
+   * venta lo cambió en el medio, se deshacen las que ya entraron y se
+   * responde 409, así nunca queda un reparto a medias.
+   */
+  async fijarSaldos(
+    dto: FijarSaldosDto,
+    usuarioId?: string,
+  ): Promise<StockSectorResponseDto[]> {
+    const { productId } = dto;
+    const sectorIds = dto.saldos.map((s) => s.sectorId);
+
+    if (new Set(sectorIds).size !== sectorIds.length) {
+      throw new BadRequestException('Hay un sector repetido en el reparto.');
+    }
+
+    const [producto, sectores, saldos] = await Promise.all([
+      this.productModel.findById(productId).select('nombre').lean().exec(),
+      this.sectorModel
+        .find({ _id: { $in: sectorIds.map((id) => new Types.ObjectId(id)) } })
+        .select('nombre activo')
+        .lean()
+        .exec(),
+      this.stockSectorModel
+        .find({ productId: new Types.ObjectId(productId) })
+        .exec(),
+    ]);
+
+    if (!producto) {
+      throw new NotFoundException('Producto no encontrado');
+    }
+
+    const sectorPorId = new Map(
+      sectores.map((s) => [
+        s._id.toString(),
+        { nombre: s.nombre, activo: s.activo },
+      ]),
+    );
+    const faltante = sectorIds.find((id) => !sectorPorId.has(id));
+    if (faltante) {
+      throw new NotFoundException('Sector no encontrado');
+    }
+
+    const saldoPorSector = new Map<string, StockSectorDocument>(
+      saldos.map((s) => [s.sectorId.toString(), s]),
+    );
+
+    const cambios: CambioSaldo[] = dto.saldos
+      .map((s) => ({
+        sectorId: s.sectorId,
+        actual: saldoPorSector.get(s.sectorId)?.cantidad ?? 0,
+        nuevo: s.cantidad,
+      }))
+      .filter((c) => c.nuevo !== c.actual);
+
+    // Un sector inactivo puede vaciarse pero no recibir (ver
+    // assertSectorPuedeRecibir).
+    for (const cambio of cambios) {
+      const sector = sectorPorId.get(cambio.sectorId);
+      if (cambio.nuevo > cambio.actual && sector && !sector.activo) {
+        throw new ConflictException(
+          `El sector "${sector.nombre}" está inactivo y no puede recibir stock.`,
+        );
+      }
+    }
+
+    if (cambios.length > 0) {
+      const resultados = await Promise.allSettled(
+        cambios.map((c) =>
+          this.fijarSiNoCambio(productId, c.sectorId, c.actual, c.nuevo),
+        ),
+      );
+
+      const aplicados = cambios.filter(
+        (_, i) => resultados[i].status === 'fulfilled' && resultados[i].value,
+      );
+
+      if (aplicados.length !== cambios.length) {
+        // Compensación: los que entraron vuelven a su valor anterior.
+        await Promise.allSettled(
+          aplicados.map((c) =>
+            this.fijarSiNoCambio(productId, c.sectorId, c.nuevo, c.actual),
+          ),
+        );
+        const error = resultados.find(
+          (r): r is PromiseRejectedResult => r.status === 'rejected',
+        );
+        if (error) {
+          throw error.reason;
+        }
+        throw new ConflictException(
+          `El stock de "${producto.nombre}" cambió mientras lo editabas (por ejemplo, por una venta). Volvé a abrir el producto y probá de nuevo.`,
+        );
+      }
+
+      resultados.forEach((r) => {
+        if (r.status === 'fulfilled' && r.value) {
+          saldoPorSector.set(r.value.sectorId.toString(), r.value);
+        }
+      });
+
+      await this.movimientoModel.insertMany(
+        planificarReparto(cambios).map((paso) => ({
+          tipo: paso.tipo,
+          productId: new Types.ObjectId(productId),
+          ...(paso.sectorOrigenId
+            ? { sectorOrigenId: new Types.ObjectId(paso.sectorOrigenId) }
+            : {}),
+          ...(paso.sectorDestinoId
+            ? { sectorDestinoId: new Types.ObjectId(paso.sectorDestinoId) }
+            : {}),
+          cantidad: paso.cantidad,
+          motivo: paso.motivo,
+          ...(usuarioId ? { usuarioId: new Types.ObjectId(usuarioId) } : {}),
+          fecha: new Date(),
+        })),
+      );
+    }
+
+    // Los saldos de sectores que no vinieron en el pedido tambien se
+    // devuelven, con sus nombres: el front recibe el reparto completo.
+    const faltanNombres = [...saldoPorSector.keys()].filter(
+      (id) => !sectorPorId.has(id),
+    );
+    const nombres = faltanNombres.length
+      ? await this.buildNombres({ sectorIds: faltanNombres, productIds: [] })
+      : undefined;
+    nombres?.sectores.forEach((valor, id) => sectorPorId.set(id, valor));
+
+    const contexto: NombresContext = {
+      productos: new Map([[productId, producto.nombre]]),
+      sectores: sectorPorId,
+    };
+
+    return [...saldoPorSector.values()]
+      .map((saldo) => this.mapSaldoToDto(saldo, contexto))
+      .sort((a, b) => a.sectorNombre.localeCompare(b.sectorNombre, 'es'));
+  }
+
   // ------------------------------------------------------------ saldos (base)
 
   async getSaldo(productId: string, sectorId: string): Promise<number> {
@@ -467,6 +615,38 @@ export class StockService {
   // ------------------------------------------------------- saldos (internos)
 
   /**
+   * Lleva un saldo de `esperado` a `nuevo` solo si sigue en `esperado`.
+   * Devuelve null si alguien lo cambió en el medio. Con `esperado` en 0 la
+   * fila puede no existir todavía, así que se crea; si ya existía con otro
+   * valor, el índice único rechaza el alta y también se devuelve null.
+   */
+  private async fijarSiNoCambio(
+    productId: string,
+    sectorId: string,
+    esperado: number,
+    nuevo: number,
+  ): Promise<StockSectorDocument | null> {
+    try {
+      return await this.stockSectorModel
+        .findOneAndUpdate<StockSectorDocument>(
+          {
+            productId: new Types.ObjectId(productId),
+            sectorId: new Types.ObjectId(sectorId),
+            cantidad: esperado,
+          },
+          { $set: { cantidad: nuevo } },
+          { new: true, upsert: esperado === 0, setDefaultsOnInsert: false },
+        )
+        .exec();
+    } catch (error) {
+      if (this.isDuplicateKeyError(error)) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  /**
    * Descuento atomico condicional: el filtro exige que haya saldo suficiente,
    * asi que la comprobacion y la resta ocurren en la misma operacion y no hay
    * ventana entre validar y escribir. Devuelve false si no alcanzaba.
@@ -530,8 +710,16 @@ export class StockService {
   private async registrarEnLibro(
     datos: DatosMovimiento,
   ): Promise<MovimientoStockResponseDto> {
-    const movimiento = await this.crearMovimiento(datos);
-    return this.mapMovimientoToDto(movimiento, await this.buildNombres());
+    // Sólo hacen falta los nombres de este movimiento, y se leen a la vez que
+    // se escribe la fila del libro.
+    const sectorIds = [datos.sectorOrigenId, datos.sectorDestinoId].filter(
+      (id): id is string => !!id,
+    );
+    const [movimiento, nombres] = await Promise.all([
+      this.crearMovimiento(datos),
+      this.buildNombres({ productIds: [datos.productId], sectorIds }),
+    ]);
+    return this.mapMovimientoToDto(movimiento, nombres);
   }
 
   /**
@@ -626,10 +814,33 @@ export class StockService {
     );
   }
 
-  private async buildNombres(): Promise<NombresContext> {
+  /**
+   * Nombres de productos y sectores. Sin filtro trae todos (listados); con
+   * ids trae sólo esos, para no leer el catálogo entero cuando la respuesta
+   * nombra uno o dos.
+   */
+  private async buildNombres(filtro?: {
+    productIds?: string[];
+    sectorIds?: string[];
+  }): Promise<NombresContext> {
+    const porIds = (ids?: string[]) =>
+      ids ? { _id: { $in: ids.map((id) => new Types.ObjectId(id)) } } : {};
+
     const [productos, sectores] = await Promise.all([
-      this.productModel.find().select('nombre').exec(),
-      this.sectorModel.find().select('nombre activo').exec(),
+      filtro?.productIds?.length === 0
+        ? Promise.resolve([])
+        : this.productModel
+            .find(porIds(filtro?.productIds))
+            .select('nombre')
+            .lean()
+            .exec(),
+      filtro?.sectorIds?.length === 0
+        ? Promise.resolve([])
+        : this.sectorModel
+            .find(porIds(filtro?.sectorIds))
+            .select('nombre activo')
+            .lean()
+            .exec(),
     ]);
 
     return {
