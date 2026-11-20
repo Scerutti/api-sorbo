@@ -1,5 +1,6 @@
 
 import {
+  BadRequestException,
   HttpException,
   HttpStatus,
   Injectable,
@@ -7,9 +8,10 @@ import {
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { plainToInstance } from 'class-transformer';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import * as bcrypt from 'bcrypt';
 import { RegisterDto } from '../auth/dto/register.dto';
+import { Sector, SectorDocument } from '../sectores/schemas/sector.schema';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UserDto } from './dto/user.dto';
 import { User, UserDocument } from './schemas/user.schema';
@@ -20,10 +22,14 @@ const PASSWORD_SALT_ROUNDS = 12;
 export class UsersService {
   constructor(
     @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
+    @InjectModel(Sector.name)
+    private readonly sectorModel: Model<SectorDocument>,
   ) {}
 
   async create(registerDto: RegisterDto): Promise<UserDto> {
     try {
+      await this.assertSectorExiste(registerDto.sectorId);
+
       const passwordHash = await bcrypt.hash(
         registerDto.password,
         PASSWORD_SALT_ROUNDS,
@@ -33,10 +39,17 @@ export class UsersService {
         passwordHash,
         name: registerDto.displayName,
         roles: registerDto.roles ?? [],
+        ...(registerDto.sectorId
+          ? { sectorId: new Types.ObjectId(registerDto.sectorId) }
+          : {}),
       });
 
       return this.mapToDto(createdUser);
     } catch (error) {
+      if (error instanceof HttpException) {
+        throw error;
+      }
+
       throw new HttpException(
         this.extractMessage(error, 'No se pudo crear el usuario'),
         HttpStatus.BAD_REQUEST,
@@ -83,6 +96,11 @@ export class UsersService {
         updatePayload.roles = updateUserDto.roles;
       }
 
+      if (typeof updateUserDto.sectorId === 'string') {
+        await this.assertSectorExiste(updateUserDto.sectorId);
+        updatePayload.sectorId = new Types.ObjectId(updateUserDto.sectorId);
+      }
+
       if (
         typeof updateUserDto.password === 'string' &&
         updateUserDto.password.length > 0
@@ -121,6 +139,24 @@ export class UsersService {
     const deletedUser = await this.userModel.findByIdAndDelete(id).exec();
     if (!deletedUser) {
       throw new NotFoundException('Usuario no encontrado');
+    }
+  }
+
+  /**
+   * Un sectorId que no existe dejaria al usuario sin stock accesible y el
+   * error recien aparecería al vender, asi que se valida al asignarlo.
+   */
+  private async assertSectorExiste(sectorId?: string): Promise<void> {
+    if (!sectorId) {
+      return;
+    }
+
+    const existe = await this.sectorModel.exists({
+      _id: new Types.ObjectId(sectorId),
+    });
+
+    if (!existe) {
+      throw new BadRequestException('El sector indicado no existe.');
     }
   }
 

@@ -14,12 +14,18 @@ import { SectorResponseDto } from './dto/sector-response.dto';
 import { UpdateSectorDto } from './dto/update-sector.dto';
 import { Sector, SectorDocument } from './schemas/sector.schema';
 import { SectorContract } from '../shared/types/sector.types';
+import {
+  StockSector,
+  StockSectorDocument,
+} from '../stock/schemas/stock-sector.schema';
 
 @Injectable()
 export class SectoresService {
   constructor(
     @InjectModel(Sector.name)
     private readonly sectorModel: Model<SectorDocument>,
+    @InjectModel(StockSector.name)
+    private readonly stockSectorModel: Model<StockSectorDocument>,
   ) {}
 
   async create(createSectorDto: CreateSectorDto): Promise<SectorResponseDto> {
@@ -140,7 +146,20 @@ export class SectoresService {
       );
     }
 
-    await this.sectorModel.findByIdAndDelete(id).exec();
+    // Borrar un sector con saldo haria desaparecer ese stock del total sin
+    // dejar rastro. Hay que vaciarlo antes, transfiriendo a otro sector.
+    const productosConSaldo = await this.stockSectorModel
+      .countDocuments({ sectorId: sector._id, cantidad: { $gt: 0 } })
+      .exec();
+
+    if (productosConSaldo > 0) {
+      throw new ConflictException(
+        `No se puede eliminar: el sector tiene stock de ${productosConSaldo} producto(s). Transferilo a otro sector primero.`,
+      );
+    }
+
+    await this.sectorModel.deleteOne({ _id: sector._id }).exec();
+    await this.stockSectorModel.deleteMany({ sectorId: sector._id }).exec();
   }
 
   /**
