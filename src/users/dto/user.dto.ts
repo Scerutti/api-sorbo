@@ -17,8 +17,16 @@ export class UserDto implements BaseResponseDto {
   roles?: UserRole[];
 
   // Llega como ObjectId desde Mongo; el front lo necesita como string.
+  //
+  // Se lee de `obj` (el objeto original) y no de `value`: class-transformer
+  // clona el ObjectId antes de llamar al Transform, y ese clon se construye
+  // con `new ObjectId()`, que genera un id nuevo al azar. Con `value` cada
+  // GET devolvia un sectorId inventado que no coincidia con ningun sector.
   @Expose()
-  @Transform(({ value }) => (value ? String(value) : undefined))
+  @Transform(({ obj }) => {
+    const raw = (obj as { sectorId?: { toString(): string } | null }).sectorId;
+    return raw ? raw.toString() : undefined;
+  })
   sectorId?: string;
 
   @Expose()
