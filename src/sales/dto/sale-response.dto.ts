@@ -38,6 +38,10 @@ export class SaleResponseDto implements BaseResponseDto {
   vendedorId?: string;
 
   @Expose()
+  @Transform(({ value }) => (value ? String(value) : undefined))
+  sectorId?: string;
+
+  @Expose()
   @Type(() => Date)
   createdAt?: Date;
 

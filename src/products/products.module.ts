@@ -5,6 +5,7 @@ import { Product, ProductSchema } from './schemas/product.schema';
 import { ProductsController } from './products.controller';
 import { ProductsService } from './products.service';
 import { CostsModule } from '../costs/costs.module';
+import { StockModule } from '../stock/stock.module';
 import {
   TipoCosto,
   TipoCostoSchema,
@@ -20,6 +21,9 @@ import {
     // Products -> Costs -> Expenses -> Products es tambien un ciclo de require,
     // no solo de inyeccion, asi que la referencia debe evaluarse perezosamente.
     forwardRef(() => CostsModule),
+    // StockModule registra el schema de Product directo, no ProductsModule,
+    // asi que esta dependencia no cierra ningun ciclo.
+    StockModule,
   ],
   controllers: [ProductsController],
   providers: [ProductsService],

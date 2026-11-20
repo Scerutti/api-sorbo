@@ -8,12 +8,11 @@ import { UserDocument } from '../../users/schemas/user.schema';
 
 @Injectable()
 export class RefreshStrategy extends PassportStrategy(Strategy, 'refresh') {
+  // PassportStrategy de Nest ya le pasa a passport-custom un callback que
+  // llama a validate(req) y resuelve done(). Pasarle uno propio era redundante
+  // y no tipaba: el mixin no acepta argumentos para esta estrategia.
   constructor(private readonly authService: AuthService) {
-    super((req: FastifyRequest, done: (error: Error | null, user?: UserDocument) => void) => {
-      this.validate(req)
-        .then((user) => done(null, user))
-        .catch((error) => done(error));
-    });
+    super();
   }
 
   async validate(req: FastifyRequest): Promise<UserDocument> {

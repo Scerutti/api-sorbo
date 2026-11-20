@@ -68,6 +68,12 @@ export class CreateSaleDto {
   @IsOptional()
   @IsMongoId()
   vendedorId?: string;
+
+  // Sector del que sale el stock. Si no viene, se usa el del usuario
+  // autenticado. Solo un admin puede vender desde un sector que no es el suyo.
+  @IsOptional()
+  @IsMongoId()
+  sectorId?: string;
 }
 
 export class CreateSaleItemDto {

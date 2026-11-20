@@ -370,6 +370,102 @@ export class StockService {
     return saldo?.cantidad ?? 0;
   }
 
+  // ------------------------------------------------- API para otros modulos
+
+  /**
+   * Total por producto sumando todos los sectores. Lo usa ProductsService
+   * para exponer `stock` sin que el consumidor cruce colecciones. Una sola
+   * consulta por request, igual que el contexto de precios.
+   */
+  async sumByProduct(productId?: string): Promise<Map<string, number>> {
+    // La suma la hace Mongo: viaja una fila por producto, no una por saldo.
+    // Con productId se acota a ese producto (findOne, create, update, remove).
+    const filas = await this.stockSectorModel
+      .aggregate<{ _id: Types.ObjectId; total: number }>([
+        ...(productId
+          ? [{ $match: { productId: new Types.ObjectId(productId) } }]
+          : []),
+        { $group: { _id: '$productId', total: { $sum: '$cantidad' } } },
+      ])
+      .exec();
+
+    return new Map(filas.map((fila) => [fila._id.toString(), fila.total]));
+  }
+
+  /** Descuenta una linea de venta del sector y la deja asentada en el libro. */
+  async descontarPorVenta(
+    productId: string,
+    sectorId: string,
+    cantidad: number,
+    saleId: string,
+    usuarioId?: string,
+  ): Promise<void> {
+    const descontado = await this.decrementarCondicional(
+      productId,
+      sectorId,
+      cantidad,
+    );
+    if (!descontado) {
+      await this.throwStockInsuficiente(productId, sectorId, cantidad);
+    }
+
+    await this.crearMovimiento({
+      tipo: TipoMovimiento.SALIDA,
+      productId,
+      sectorOrigenId: sectorId,
+      cantidad,
+      motivo: 'Venta',
+      saleId,
+      usuarioId,
+    });
+  }
+
+  /** Devuelve stock al sector cuando una venta se edita o se anula. */
+  async reponerPorVenta(
+    productId: string,
+    sectorId: string,
+    cantidad: number,
+    saleId: string,
+    usuarioId?: string,
+    motivo = 'Anulación de venta',
+  ): Promise<void> {
+    await this.incrementar(productId, sectorId, cantidad);
+
+    await this.crearMovimiento({
+      tipo: TipoMovimiento.ENTRADA,
+      productId,
+      sectorDestinoId: sectorId,
+      cantidad,
+      motivo,
+      saleId,
+      usuarioId,
+    });
+  }
+
+  /**
+   * Borra los saldos de un producto eliminado, para no dejar filas huerfanas
+   * que sigan sumando al total. Los movimientos se conservan: son historia.
+   */
+  async eliminarSaldosDeProducto(productId: string): Promise<void> {
+    // Solo quedan filas en cero: ProductsService no deja borrar un producto
+    // con stock, asi toda baja de unidades pasa por el libro.
+    await this.stockSectorModel
+      .deleteMany({ productId: new Types.ObjectId(productId) })
+      .exec();
+  }
+
+  /** Valida que el sector exista y acepte operaciones. Lo usa SalesService. */
+  async assertSectorOperativo(sectorId: string): Promise<void> {
+    const sector = await this.assertSectorExiste(sectorId);
+    if (!sector.activo) {
+      throw new ConflictException(
+        `El sector "${sector.nombre}" está inactivo y no admite ventas.`,
+      );
+    }
+  }
+
+  // ------------------------------------------------------- saldos (internos)
+
   /**
    * Descuento atomico condicional: el filtro exige que haya saldo suficiente,
    * asi que la comprobacion y la resta ocurren en la misma operacion y no hay
@@ -434,7 +530,19 @@ export class StockService {
   private async registrarEnLibro(
     datos: DatosMovimiento,
   ): Promise<MovimientoStockResponseDto> {
-    const movimiento = await this.movimientoModel.create({
+    const movimiento = await this.crearMovimiento(datos);
+    return this.mapMovimientoToDto(movimiento, await this.buildNombres());
+  }
+
+  /**
+   * Inserta la fila del libro sin resolver nombres. Lo usan los flujos que
+   * escriben varios movimientos seguidos (una venta con varias lineas) y no
+   * necesitan el DTO de vuelta.
+   */
+  private async crearMovimiento(
+    datos: DatosMovimiento,
+  ): Promise<MovimientoStockDocument> {
+    return this.movimientoModel.create({
       tipo: datos.tipo,
       productId: new Types.ObjectId(datos.productId),
       ...(datos.sectorOrigenId
@@ -451,8 +559,6 @@ export class StockService {
         : {}),
       fecha: new Date(),
     });
-
-    return this.mapMovimientoToDto(movimiento, await this.buildNombres());
   }
 
   private requireSector(valor: string | undefined, campo: string): string {
