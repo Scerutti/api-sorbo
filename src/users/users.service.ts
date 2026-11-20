@@ -17,8 +17,24 @@ import { User, UserDocument } from './schemas/user.schema';
 
 const PASSWORD_SALT_ROUNDS = 12;
 
+/**
+ * Cuánto vive en memoria el usuario que JwtStrategy adjunta a cada request.
+ * Sin esto, cada request autenticado hacía una consulta extra a Atlas antes
+ * de llegar al controller. Los cambios que pasan por update() y remove() se
+ * ven al instante porque invalidan la entrada; el TTL sólo cubre cambios
+ * hechos por fuera de este servicio (otra instancia, la base a mano).
+ */
+const AUTH_CACHE_TTL_MS = 30_000;
+
 @Injectable()
 export class UsersService {
+  // Se guarda la promesa, no el documento: los requests que llegan juntos
+  // (una pantalla dispara varios) comparten una sola consulta.
+  private readonly authCache = new Map<
+    string,
+    { expiresAt: number; user: Promise<UserDocument | null> }
+  >();
+
   constructor(
     @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
     @InjectModel(Sector.name)
@@ -72,6 +88,40 @@ export class UsersService {
 
   async findOneDocument(id: string): Promise<UserDocument | null> {
     return this.userModel.findById(id).exec();
+  }
+
+  /**
+   * Usuario para request.user, con caché corto. Trae el documento sin
+   * passwordHash ni refreshTokens: nadie los lee desde request.user, y quien
+   * necesita guardarlos (login, refresh, logout) busca el documento fresco
+   * con findOneDocument.
+   */
+  findForAuth(id: string): Promise<UserDocument | null> {
+    const now = Date.now();
+    const cached = this.authCache.get(id);
+    if (cached && cached.expiresAt > now) {
+      return cached.user;
+    }
+
+    const user = this.userModel
+      .findById(id)
+      .select('-passwordHash -refreshTokens')
+      .exec();
+    this.authCache.set(id, { expiresAt: now + AUTH_CACHE_TTL_MS, user });
+
+    // Un error o un usuario inexistente no se cachean.
+    user.then(
+      (found) => {
+        if (!found) this.invalidateAuthCache(id);
+      },
+      () => this.invalidateAuthCache(id),
+    );
+
+    return user;
+  }
+
+  invalidateAuthCache(id: string): void {
+    this.authCache.delete(id);
   }
 
   async findByEmail(email: string): Promise<UserDocument | null> {
@@ -130,6 +180,9 @@ export class UsersService {
         throw new NotFoundException('Usuario no encontrado');
       }
 
+      // Roles y sector tienen que valer desde el próximo request.
+      this.invalidateAuthCache(id);
+
       return this.mapToDto(updatedUser);
     } catch (error) {
       if (error instanceof HttpException) {
@@ -145,6 +198,7 @@ export class UsersService {
 
   async remove(id: string): Promise<void> {
     const deletedUser = await this.userModel.findByIdAndDelete(id).exec();
+    this.invalidateAuthCache(id);
     if (!deletedUser) {
       throw new NotFoundException('Usuario no encontrado');
     }

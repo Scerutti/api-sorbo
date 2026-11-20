@@ -57,9 +57,25 @@ export class CostsService {
   }
 
   async findAll(): Promise<CostResponseDto[]> {
-    const costs = await this.costModel.find().exec();
-    const tipoNombres = await this.loadTipoNombres();
-    return Promise.all(costs.map((cost) => this.mapToDto(cost, tipoNombres)));
+    const [costs, tipoNombres] = await Promise.all([
+      this.costModel.find().exec(),
+      this.loadTipoNombres(),
+    ]);
+
+    // Los componentes de todos los costos se resuelven en una sola consulta.
+    // Antes era una consulta por costo, y ProductsService.findAll la arrastra.
+    const ids = [
+      ...new Set(
+        costs.flatMap((cost) =>
+          (cost.componentes ?? []).map((c) => c.toString()),
+        ),
+      ),
+    ];
+    const valores = await this.gastosService.valorUnitarioPorId(ids);
+
+    return Promise.all(
+      costs.map((cost) => this.mapToDto(cost, tipoNombres, valores)),
+    );
   }
 
   async findOne(id: string): Promise<CostResponseDto> {
@@ -150,7 +166,7 @@ export class CostsService {
   }
 
   private async loadTipoNombres(): Promise<Map<string, string>> {
-    const tipos = await this.tipoCostoModel.find().select('nombre').exec();
+    const tipos = await this.tipoCostoModel.find().select('nombre').lean().exec();
     return new Map(
       tipos.map((tipo) => [tipo._id.toString(), tipo.nombre]),
     );
@@ -174,12 +190,19 @@ export class CostsService {
   private async mapToDto(
     cost: CostItemDocument,
     tipoNombres?: Map<string, string>,
+    valoresGastos?: Map<string, number>,
   ): Promise<CostResponseDto> {
     const plainCost = cost.toObject();
     const componentes = (cost.componentes ?? []).map((c) => c.toString());
 
     if (componentes.length > 0) {
-      plainCost.valor = await this.gastosService.sumValorUnitario(componentes);
+      // Mismo resultado que sumValorUnitario: $in no repite ids.
+      plainCost.valor = valoresGastos
+        ? [...new Set(componentes)].reduce(
+            (acc, id) => acc + (valoresGastos.get(id) ?? 0),
+            0,
+          )
+        : await this.gastosService.sumValorUnitario(componentes);
     }
 
     const tipoId = cost.tipoId ? cost.tipoId.toString() : '';
