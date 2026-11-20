@@ -67,10 +67,11 @@ export class ProductsService {
         soldCount: createProductDto.soldCount ?? 0,
       });
 
+      // Un producto recien creado no tiene saldos: no hace falta sumarlos.
       return this.mapToDto(
         createdProduct,
         await this.buildPricingContext(),
-        await this.stockService.sumByProduct(createdProduct.id as string),
+        new Map<string, number>(),
       );
     } catch (error) {
       if (error instanceof HttpException) {
@@ -120,22 +121,24 @@ export class ProductsService {
         payload.tipoId = new Types.ObjectId(updateProductDto.tipoId);
       }
 
-      const updatedProduct = await this.productModel
-        .findByIdAndUpdate(id, payload, {
-          new: true,
-          runValidators: true,
-        })
-        .exec();
+      // Costos y stock no dependen de lo que se guarda: se leen a la vez que
+      // la escritura en lugar de esperar uno detras del otro.
+      const [updatedProduct, pricing, stockTotales] = await Promise.all([
+        this.productModel
+          .findByIdAndUpdate(id, payload, {
+            new: true,
+            runValidators: true,
+          })
+          .exec(),
+        this.buildPricingContext(),
+        this.stockService.sumByProduct(id),
+      ]);
 
       if (!updatedProduct) {
         throw new NotFoundException('Producto no encontrado');
       }
 
-      return this.mapToDto(
-        updatedProduct,
-        await this.buildPricingContext(),
-        await this.stockService.sumByProduct(id),
-      );
+      return this.mapToDto(updatedProduct, pricing, stockTotales);
     } catch (error) {
       if (error instanceof HttpException) {
         throw error;
@@ -174,7 +177,7 @@ export class ProductsService {
   async buildPricingContext(): Promise<PricingContext> {
     const [costs, tipos] = await Promise.all([
       this.costsService.findAll(),
-      this.tipoCostoModel.find().exec(),
+      this.tipoCostoModel.find().select('nombre aplicaATodos').lean().exec(),
     ]);
 
     const tipoNombres = new Map<string, string>();
