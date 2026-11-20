@@ -76,8 +76,17 @@ export class SalesService {
     }
   }
 
-  async findAll(): Promise<SaleResponseDto[]> {
-    const sales = await this.saleModel.find().exec();
+  /**
+   * Un admin ve todas las ventas. Cualquier otro rol, solo las de su sector,
+   * con la misma regla que GET /stock.
+   */
+  async findAll(usuario: UserDocument): Promise<SaleResponseDto[]> {
+    const filtro: Record<string, unknown> = {};
+    if (!usuario.roles.includes(UserRole.ADMIN)) {
+      filtro.sectorId = new Types.ObjectId(this.sectorPropioOFallar(usuario));
+    }
+
+    const sales = await this.saleModel.find(filtro).exec();
     return sales.map((sale) => this.mapToDto(sale));
   }
 
@@ -124,11 +133,12 @@ export class SalesService {
     return filter;
   }
 
-  async findOne(id: string): Promise<SaleResponseDto> {
+  async findOne(id: string, usuario: UserDocument): Promise<SaleResponseDto> {
     const sale = await this.saleModel.findById(id).exec();
     if (!sale) {
       throw new NotFoundException('Venta no encontrada');
     }
+    this.assertPuedeVerVenta(sale, usuario);
 
     return this.mapToDto(sale);
   }
@@ -271,11 +281,13 @@ export class SalesService {
 
   async generateSaleExcel(
     id: string,
+    usuario: UserDocument,
   ): Promise<{ workbook: ExcelJS.Workbook; fileName: string }> {
     const sale = await this.saleModel.findById(id).exec();
     if (!sale) {
       throw new NotFoundException('Venta no encontrada');
     }
+    this.assertPuedeVerVenta(sale, usuario);
 
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('Detalle de venta');
@@ -548,17 +560,38 @@ export class SalesService {
     sale: SaleDocument,
     usuario: UserDocument,
   ): void {
-    if (usuario.roles.includes(UserRole.ADMIN)) {
-      return;
-    }
-
-    const sectorVenta = this.sectorDeLaVenta(sale);
-    const propio = usuario.sectorId ? usuario.sectorId.toString() : undefined;
-    if (!sectorVenta || sectorVenta !== propio) {
+    if (!this.esDeSuSector(sale, usuario)) {
       throw new ForbiddenException(
         'Solo un admin puede modificar o anular una venta de otro sector.',
       );
     }
+  }
+
+  private assertPuedeVerVenta(sale: SaleDocument, usuario: UserDocument): void {
+    if (!this.esDeSuSector(sale, usuario)) {
+      // 404 y no 403: para quien no la puede ver, la venta no existe.
+      throw new NotFoundException('Venta no encontrada');
+    }
+  }
+
+  /** Admin: siempre. Otro rol: solo ventas con sector, y que sea el suyo. */
+  private esDeSuSector(sale: SaleDocument, usuario: UserDocument): boolean {
+    if (usuario.roles.includes(UserRole.ADMIN)) {
+      return true;
+    }
+
+    const sectorVenta = this.sectorDeLaVenta(sale);
+    const propio = usuario.sectorId ? usuario.sectorId.toString() : undefined;
+    return !!sectorVenta && sectorVenta === propio;
+  }
+
+  private sectorPropioOFallar(usuario: UserDocument): string {
+    if (!usuario.sectorId) {
+      throw new ForbiddenException(
+        'No tenés un sector asignado. Pedile a un admin que te asigne uno.',
+      );
+    }
+    return usuario.sectorId.toString();
   }
 
   /**

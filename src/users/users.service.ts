@@ -1,4 +1,3 @@
-
 import {
   BadRequestException,
   HttpException,
@@ -101,6 +100,9 @@ export class UsersService {
         updatePayload.sectorId = new Types.ObjectId(updateUserDto.sectorId);
       }
 
+      // sectorId: null deja al usuario sin sector.
+      const quitarSector = updateUserDto.sectorId === null;
+
       if (
         typeof updateUserDto.password === 'string' &&
         updateUserDto.password.length > 0
@@ -112,10 +114,16 @@ export class UsersService {
       }
 
       const updatedUser = await this.userModel
-        .findByIdAndUpdate(id, updatePayload, {
-          new: true,
-          runValidators: true,
-        })
+        .findByIdAndUpdate(
+          id,
+          quitarSector
+            ? { ...updatePayload, $unset: { sectorId: 1 } }
+            : updatePayload,
+          {
+            new: true,
+            runValidators: true,
+          },
+        )
         .exec();
 
       if (!updatedUser) {

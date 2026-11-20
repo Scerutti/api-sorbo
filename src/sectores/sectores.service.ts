@@ -14,6 +14,7 @@ import { SectorResponseDto } from './dto/sector-response.dto';
 import { UpdateSectorDto } from './dto/update-sector.dto';
 import { Sector, SectorDocument } from './schemas/sector.schema';
 import { SectorContract } from '../shared/types/sector.types';
+import { Sale, SaleDocument } from '../sales/schemas/sale.schema';
 import {
   StockSector,
   StockSectorDocument,
@@ -26,6 +27,8 @@ export class SectoresService {
     private readonly sectorModel: Model<SectorDocument>,
     @InjectModel(StockSector.name)
     private readonly stockSectorModel: Model<StockSectorDocument>,
+    @InjectModel(Sale.name)
+    private readonly saleModel: Model<SaleDocument>,
   ) {}
 
   async create(createSectorDto: CreateSectorDto): Promise<SectorResponseDto> {
@@ -128,6 +131,20 @@ export class SectoresService {
     if (productosConSaldo > 0) {
       throw new ConflictException(
         `No se puede eliminar: el sector tiene stock de ${productosConSaldo} producto(s). Transferilo a otro sector primero.`,
+      );
+    }
+
+    // Las ventas guardan el sector para devolverle las unidades si se
+    // anulan. Si el sector ya no existe, esa anulacion crearia un saldo en un
+    // sector fantasma que suma al total pero no aparece en ningun listado.
+    // Un sector con ventas se desactiva, no se borra.
+    const ventas = await this.saleModel
+      .countDocuments({ sectorId: sector._id })
+      .exec();
+
+    if (ventas > 0) {
+      throw new ConflictException(
+        `No se puede eliminar: el sector tiene ${ventas} venta(s) registrada(s). Desactivalo en lugar de borrarlo.`,
       );
     }
 

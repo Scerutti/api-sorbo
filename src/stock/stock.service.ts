@@ -377,19 +377,19 @@ export class StockService {
    * para exponer `stock` sin que el consumidor cruce colecciones. Una sola
    * consulta por request, igual que el contexto de precios.
    */
-  async sumByProduct(): Promise<Map<string, number>> {
-    const saldos = await this.stockSectorModel
-      .find()
-      .select('productId cantidad')
+  async sumByProduct(productId?: string): Promise<Map<string, number>> {
+    // La suma la hace Mongo: viaja una fila por producto, no una por saldo.
+    // Con productId se acota a ese producto (findOne, create, update, remove).
+    const filas = await this.stockSectorModel
+      .aggregate<{ _id: Types.ObjectId; total: number }>([
+        ...(productId
+          ? [{ $match: { productId: new Types.ObjectId(productId) } }]
+          : []),
+        { $group: { _id: '$productId', total: { $sum: '$cantidad' } } },
+      ])
       .exec();
 
-    const totales = new Map<string, number>();
-    for (const saldo of saldos) {
-      const idProducto = saldo.productId.toString();
-      totales.set(idProducto, (totales.get(idProducto) ?? 0) + saldo.cantidad);
-    }
-
-    return totales;
+    return new Map(filas.map((fila) => [fila._id.toString(), fila.total]));
   }
 
   /** Descuenta una linea de venta del sector y la deja asentada en el libro. */
@@ -447,6 +447,8 @@ export class StockService {
    * que sigan sumando al total. Los movimientos se conservan: son historia.
    */
   async eliminarSaldosDeProducto(productId: string): Promise<void> {
+    // Solo quedan filas en cero: ProductsService no deja borrar un producto
+    // con stock, asi toda baja de unidades pasa por el libro.
     await this.stockSectorModel
       .deleteMany({ productId: new Types.ObjectId(productId) })
       .exec();

@@ -50,24 +50,31 @@ export class SalesController {
   @Get()
   @ApiOperation({ summary: 'Listar ventas' })
   @ApiResponse({ status: HttpStatus.OK, type: SaleResponseDto, isArray: true })
-  async findAll(): Promise<SaleResponseDto[]> {
-    return this.salesService.findAll();
+  async findAll(@GetUser() user: UserDocument): Promise<SaleResponseDto[]> {
+    return this.salesService.findAll(user);
   }
 
   @Get(':id')
   @ApiOperation({ summary: 'Obtener una venta por ID' })
   @ApiResponse({ status: HttpStatus.OK, type: SaleResponseDto })
-  async findOne(@Param('id') id: string): Promise<SaleResponseDto> {
-    return this.salesService.findOne(id);
+  async findOne(
+    @Param('id') id: string,
+    @GetUser() user: UserDocument,
+  ): Promise<SaleResponseDto> {
+    return this.salesService.findOne(id, user);
   }
 
   @Get(":id/export")
   @ApiOperation({ summary: "Exportar detalle de venta a Excel" })
   async exportExcel(
     @Param("id") id: string,
-    @Res() res: FastifyReply
+    @Res() res: FastifyReply,
+    @GetUser() user: UserDocument,
   ) {
-    const { workbook, fileName } = await this.salesService.generateSaleExcel(id);
+    const { workbook, fileName } = await this.salesService.generateSaleExcel(
+      id,
+      user,
+    );
 
     const buffer = await workbook.xlsx.writeBuffer();
 

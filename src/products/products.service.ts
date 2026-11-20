@@ -1,6 +1,7 @@
 
 import {
   BadRequestException,
+  ConflictException,
   forwardRef,
   HttpException,
   HttpStatus,
@@ -69,7 +70,7 @@ export class ProductsService {
       return this.mapToDto(
         createdProduct,
         await this.buildPricingContext(),
-        await this.stockService.sumByProduct(),
+        await this.stockService.sumByProduct(createdProduct.id as string),
       );
     } catch (error) {
       if (error instanceof HttpException) {
@@ -97,7 +98,7 @@ export class ProductsService {
     const [product, pricing, stockTotales] = await Promise.all([
       this.productModel.findById(id).exec(),
       this.buildPricingContext(),
-      this.stockService.sumByProduct(),
+      this.stockService.sumByProduct(id),
     ]);
 
     if (!product) {
@@ -133,7 +134,7 @@ export class ProductsService {
       return this.mapToDto(
         updatedProduct,
         await this.buildPricingContext(),
-        await this.stockService.sumByProduct(),
+        await this.stockService.sumByProduct(id),
       );
     } catch (error) {
       if (error instanceof HttpException) {
@@ -148,6 +149,16 @@ export class ProductsService {
   }
 
   async remove(id: string): Promise<void> {
+    // Borrar un producto con stock haria desaparecer unidades sin dejar
+    // rastro en el libro. Primero hay que llevarlo a cero con un ajuste o una
+    // salida, igual que un sector se vacia antes de borrarlo.
+    const total = (await this.stockService.sumByProduct(id)).get(id) ?? 0;
+    if (total > 0) {
+      throw new ConflictException(
+        `No se puede eliminar: el producto tiene ${total} unidad(es) en stock. Dejalo en cero con un ajuste o una salida primero.`,
+      );
+    }
+
     const deletedProduct = await this.productModel.findByIdAndDelete(id).exec();
     if (!deletedProduct) {
       throw new NotFoundException('Producto no encontrado');
