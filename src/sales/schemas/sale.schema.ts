@@ -2,6 +2,7 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
 import { Product } from '../../products/schemas/product.schema';
+import { Sector } from '../../sectores/schemas/sector.schema';
 import { User } from '../../users/schemas/user.schema';
 
 @Schema({ _id: false, versionKey: false })
@@ -66,6 +67,15 @@ export class Sale {
 
   @Prop({ type: Types.ObjectId, ref: User.name, required: false })
   vendedorId?: Types.ObjectId;
+
+  // Sector del que salio el stock. Se fija al crear la venta y no cambia:
+  // editarla o anularla tiene que devolver las unidades al mismo lugar de
+  // donde salieron, no al sector del usuario que hace la operacion.
+  //
+  // Opcional en el schema por las ventas anteriores al stock por sector, que
+  // no lo tienen. Para las nuevas, el servicio lo exige.
+  @Prop({ type: Types.ObjectId, ref: Sector.name, required: false, index: true })
+  sectorId?: Types.ObjectId;
 }
 
 export type SaleDocument = HydratedDocument<Sale>;

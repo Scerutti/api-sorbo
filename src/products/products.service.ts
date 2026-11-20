@@ -17,6 +17,7 @@ import { UpdateProductDto } from './dto/update-product.dto';
 import { Product, ProductDocument } from './schemas/product.schema';
 import { ProductContract } from '../shared/types/product.types';
 import { CostsService } from '../costs/costs.service';
+import { StockService } from '../stock/stock.service';
 import {
   TipoCosto,
   TipoCostoDocument,
@@ -43,6 +44,7 @@ export class ProductsService {
     private readonly tipoCostoModel: Model<TipoCostoDocument>,
     @Inject(forwardRef(() => CostsService))
     private readonly costsService: CostsService,
+    private readonly stockService: StockService,
   ) {}
 
   async create(
@@ -51,6 +53,8 @@ export class ProductsService {
     try {
       await this.assertTipoExists(createProductDto.tipoId);
 
+      // Sin stock: un producto nace en cero en todos los sectores. Las
+      // unidades entran despues con un movimiento, que dice a que sector van.
       const createdProduct = await this.productModel.create({
         nombre: createProductDto.nombre,
         descripcion: createProductDto.descripcion,
@@ -59,11 +63,14 @@ export class ProductsService {
         porcentajeGanancia: createProductDto.porcentajeGanancia,
         porcentajeGananciaMayorista:
           createProductDto.porcentajeGananciaMayorista ?? 0,
-        stock: createProductDto.stock,
         soldCount: createProductDto.soldCount ?? 0,
       });
 
-      return this.mapToDto(createdProduct, await this.buildPricingContext());
+      return this.mapToDto(
+        createdProduct,
+        await this.buildPricingContext(),
+        await this.stockService.sumByProduct(),
+      );
     } catch (error) {
       if (error instanceof HttpException) {
         throw error;
@@ -76,20 +83,28 @@ export class ProductsService {
   }
 
   async findAll(): Promise<ProductResponseDto[]> {
-    const [products, pricing] = await Promise.all([
+    const [products, pricing, stockTotales] = await Promise.all([
       this.productModel.find().exec(),
       this.buildPricingContext(),
+      this.stockService.sumByProduct(),
     ]);
-    return products.map((product) => this.mapToDto(product, pricing));
+    return products.map((product) =>
+      this.mapToDto(product, pricing, stockTotales),
+    );
   }
 
   async findOne(id: string): Promise<ProductResponseDto> {
-    const product = await this.productModel.findById(id).exec();
+    const [product, pricing, stockTotales] = await Promise.all([
+      this.productModel.findById(id).exec(),
+      this.buildPricingContext(),
+      this.stockService.sumByProduct(),
+    ]);
+
     if (!product) {
       throw new NotFoundException('Producto no encontrado');
     }
 
-    return this.mapToDto(product, await this.buildPricingContext());
+    return this.mapToDto(product, pricing, stockTotales);
   }
 
   async update(
@@ -115,7 +130,11 @@ export class ProductsService {
         throw new NotFoundException('Producto no encontrado');
       }
 
-      return this.mapToDto(updatedProduct, await this.buildPricingContext());
+      return this.mapToDto(
+        updatedProduct,
+        await this.buildPricingContext(),
+        await this.stockService.sumByProduct(),
+      );
     } catch (error) {
       if (error instanceof HttpException) {
         throw error;
@@ -133,6 +152,8 @@ export class ProductsService {
     if (!deletedProduct) {
       throw new NotFoundException('Producto no encontrado');
     }
+
+    await this.stockService.eliminarSaldosDeProducto(id);
   }
 
   /**
@@ -195,6 +216,7 @@ export class ProductsService {
   private mapToDto(
     product: ProductDocument,
     pricing: PricingContext,
+    stockTotales: Map<string, number>,
   ): ProductResponseDto {
     const plainProduct = product.toObject();
     const tipoId = product.tipoId ? product.tipoId.toString() : '';
@@ -221,7 +243,9 @@ export class ProductsService {
       costos,
       precioVenta,
       precioVentaMayorista,
-      stock: plainProduct.stock,
+      // El total del emprendimiento es la suma de los saldos por sector.
+      // Product.stock quedo como dato historico y ya no se lee.
+      stock: stockTotales.get(product.id as string) ?? 0,
       soldCount: plainProduct.soldCount,
       createdAt: (plainProduct as { createdAt?: Date }).createdAt,
       updatedAt: (plainProduct as { updatedAt?: Date }).updatedAt,

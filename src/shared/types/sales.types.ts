@@ -28,4 +28,7 @@ export interface SaleContract {
   total: number;
   esMayorista: boolean;
   vendedorId?: MongoId;
+  // Sector del que salio el stock. Ausente en las ventas anteriores al
+  // stock por sector.
+  sectorId?: MongoId;
 }
