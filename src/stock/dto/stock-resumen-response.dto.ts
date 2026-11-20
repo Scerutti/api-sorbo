@@ -9,9 +9,6 @@ export class StockResumenSectorDto {
   sectorNombre!: string;
 
   @Expose()
-  esGeneral!: boolean;
-
-  @Expose()
   @Type(() => Number)
   cantidad!: number;
 }

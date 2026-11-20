@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { plainToInstance } from 'class-transformer';
-import { FilterQuery, Model, Types } from 'mongoose';
+import { Model } from 'mongoose';
 import { CreateSectorDto } from './dto/create-sector.dto';
 import { SectorResponseDto } from './dto/sector-response.dto';
 import { UpdateSectorDto } from './dto/update-sector.dto';
@@ -30,12 +30,9 @@ export class SectoresService {
 
   async create(createSectorDto: CreateSectorDto): Promise<SectorResponseDto> {
     try {
-      await this.assertGeneralUnico(createSectorDto.esGeneral);
-
       const createdSector = await this.sectorModel.create({
         nombre: createSectorDto.nombre,
         descripcion: createSectorDto.descripcion,
-        esGeneral: createSectorDto.esGeneral ?? false,
         activo: createSectorDto.activo ?? true,
       });
 
@@ -79,21 +76,6 @@ export class SectoresService {
         throw new NotFoundException('Sector no encontrado');
       }
 
-      await this.assertGeneralUnico(updateSectorDto.esGeneral, id);
-
-      // El deposito general es el punto de entrada de la compra de insumos:
-      // desactivarlo o degradarlo dejaria al circuito sin donde recibir.
-      if (sector.esGeneral && updateSectorDto.activo === false) {
-        throw new ConflictException(
-          'No se puede desactivar el depósito general.',
-        );
-      }
-      if (sector.esGeneral && updateSectorDto.esGeneral === false) {
-        throw new ConflictException(
-          'No se puede quitar la marca de depósito general. Asignala a otro sector primero.',
-        );
-      }
-
       const payload: Partial<Sector> = {};
 
       if (typeof updateSectorDto.nombre === 'string') {
@@ -101,9 +83,6 @@ export class SectoresService {
       }
       if (typeof updateSectorDto.descripcion !== 'undefined') {
         payload.descripcion = updateSectorDto.descripcion;
-      }
-      if (typeof updateSectorDto.esGeneral !== 'undefined') {
-        payload.esGeneral = updateSectorDto.esGeneral;
       }
       if (typeof updateSectorDto.activo !== 'undefined') {
         payload.activo = updateSectorDto.activo;
@@ -140,12 +119,6 @@ export class SectoresService {
       throw new NotFoundException('Sector no encontrado');
     }
 
-    if (sector.esGeneral) {
-      throw new ConflictException(
-        'No se puede eliminar el depósito general. Es el punto de entrada de la compra de insumos.',
-      );
-    }
-
     // Borrar un sector con saldo haria desaparecer ese stock del total sin
     // dejar rastro. Hay que vaciarlo antes, transfiriendo a otro sector.
     const productosConSaldo = await this.stockSectorModel
@@ -162,32 +135,6 @@ export class SectoresService {
     await this.stockSectorModel.deleteMany({ sectorId: sector._id }).exec();
   }
 
-  /**
-   * Solo puede haber un sector marcado como deposito general. El indice
-   * parcial del schema lo garantiza en la base; esto lo valida antes para
-   * devolver un 409 con un mensaje util en lugar de un error de duplicado.
-   */
-  private async assertGeneralUnico(
-    esGeneral: boolean | undefined,
-    excluirId?: string,
-  ): Promise<void> {
-    if (!esGeneral) {
-      return;
-    }
-
-    const filtro: FilterQuery<SectorDocument> = { esGeneral: true };
-    if (excluirId) {
-      filtro._id = { $ne: new Types.ObjectId(excluirId) };
-    }
-
-    const yaExiste = await this.sectorModel.exists(filtro);
-    if (yaExiste) {
-      throw new ConflictException(
-        'Ya existe un sector marcado como depósito general. Solo puede haber uno.',
-      );
-    }
-  }
-
   private mapToDto(sector: SectorDocument): SectorResponseDto {
     const plainSector = sector.toObject();
 
@@ -195,7 +142,6 @@ export class SectoresService {
       id: sector.id as string,
       nombre: plainSector.nombre,
       descripcion: plainSector.descripcion,
-      esGeneral: plainSector.esGeneral,
       activo: plainSector.activo,
       createdAt: (plainSector as { createdAt?: Date }).createdAt,
       updatedAt: (plainSector as { updatedAt?: Date }).updatedAt,

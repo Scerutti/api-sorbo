@@ -32,7 +32,7 @@ export class SectoresController {
   @ApiResponse({ status: HttpStatus.CREATED, type: SectorResponseDto })
   @ApiResponse({
     status: HttpStatus.CONFLICT,
-    description: 'El nombre ya existe o ya hay un depósito general',
+    description: 'Ya existe un sector con ese nombre',
   })
   async create(
     @Body() createSectorDto: CreateSectorDto,
@@ -63,7 +63,7 @@ export class SectoresController {
   @ApiResponse({ status: HttpStatus.OK, type: SectorResponseDto })
   @ApiResponse({
     status: HttpStatus.CONFLICT,
-    description: 'El nombre ya existe o se intenta degradar el depósito general',
+    description: 'Ya existe un sector con ese nombre',
   })
   async update(
     @Param('id') id: string,
@@ -81,7 +81,7 @@ export class SectoresController {
   })
   @ApiResponse({
     status: HttpStatus.CONFLICT,
-    description: 'No se puede eliminar el depósito general',
+    description: 'El sector todavía tiene stock',
   })
   async remove(@Param('id') id: string): Promise<void> {
     await this.sectoresService.remove(id);

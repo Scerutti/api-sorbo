@@ -11,12 +11,6 @@ export class CreateSectorDto {
   @IsString()
   descripcion?: string;
 
-  // Marca el deposito central donde entra la compra de insumos. Solo uno.
-  @IsOptional()
-  @Type(() => Boolean)
-  @IsBoolean()
-  esGeneral?: boolean;
-
   @IsOptional()
   @Type(() => Boolean)
   @IsBoolean()
