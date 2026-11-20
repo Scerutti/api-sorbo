@@ -102,6 +102,30 @@ export class GastosService {
   }
 
   /**
+   * Valor unitario de cada gasto pedido, en una sola consulta. Lo usa
+   * CostsService para resolver los componentes de todos los costos juntos,
+   * en vez de hacer una consulta por costo.
+   */
+  async valorUnitarioPorId(ids: string[]): Promise<Map<string, number>> {
+    if (!ids?.length) {
+      return new Map();
+    }
+
+    const gastos = await this.gastoModel
+      .find({ _id: { $in: ids } })
+      .select('montoTotal porPaquetes')
+      .lean()
+      .exec();
+
+    return new Map(
+      gastos.map((gasto) => [
+        gasto._id.toString(),
+        gasto.porPaquetes ? gasto.montoTotal / gasto.porPaquetes : 0,
+      ]),
+    );
+  }
+
+  /**
    * Suma el montoTotal de los gastos según su clasificación (fijo / variable).
    * Usado por los reportes de punto de equilibrio y ganancias.
    */
