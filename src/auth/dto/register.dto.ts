@@ -4,6 +4,7 @@ import {
   IsArray,
   IsEmail,
   IsEnum,
+  IsMongoId,
   IsOptional,
   IsString,
   MinLength,
@@ -27,6 +28,11 @@ export class RegisterDto {
   @IsOptional()
   @IsString()
   displayName?: string;
+
+  // Sector en el que opera el usuario. Sus ventas descuentan de ese stock.
+  @IsOptional()
+  @IsMongoId()
+  sectorId?: string;
 }
 
 export const isValidUserRole = (role: string): role is UserRole =>

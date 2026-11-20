@@ -130,13 +130,14 @@ export class InversionesService {
   ): FilterQuery<InversionDocument> {
     const filter: FilterQuery<InversionDocument> = {};
     if (fechaDesde || fechaHasta) {
-      filter.fecha = {};
+      const rango: { $gte?: Date; $lte?: Date } = {};
       if (fechaDesde) {
-        filter.fecha.$gte = new Date(fechaDesde);
+        rango.$gte = new Date(fechaDesde);
       }
       if (fechaHasta) {
-        filter.fecha.$lte = new Date(fechaHasta);
+        rango.$lte = new Date(fechaHasta);
       }
+      filter.fecha = rango;
     }
     return filter;
   }

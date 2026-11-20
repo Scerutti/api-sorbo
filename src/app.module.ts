@@ -9,6 +9,8 @@ import { CostsModule } from './costs/costs.module';
 import { ExpensesModule } from './expenses/expenses.module';
 import { ProductsModule } from './products/products.module';
 import { SalesModule } from './sales/sales.module';
+import { SectoresModule } from './sectores/sectores.module';
+import { StockModule } from './stock/stock.module';
 import { TiposCostoModule } from './tipos-costo/tipos-costo.module';
 import { UsersModule } from './users/users.module';
 
@@ -32,6 +34,8 @@ import { UsersModule } from './users/users.module';
     }),
     AuthModule,
     TiposCostoModule,
+    SectoresModule,
+    StockModule,
     ProductsModule,
     CostsModule,
     SalesModule,

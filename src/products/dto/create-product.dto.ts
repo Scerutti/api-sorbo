@@ -36,11 +36,8 @@ export class CreateProductDto {
   porcentajeGananciaMayorista!: number;
 
   // costos y precioVenta se calculan en ProductsService, NO se envían.
-
-  @Type(() => Number)
-  @IsInt()
-  @Min(0)
-  stock!: number;
+  // stock tampoco: es la suma de los saldos por sector. Las unidades entran
+  // con un movimiento en /stock/movimientos, que dice a qué sector van.
 
   @IsOptional()
   @Type(() => Number)

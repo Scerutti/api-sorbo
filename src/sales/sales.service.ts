@@ -1,4 +1,6 @@
 import {
+  BadRequestException,
+  ForbiddenException,
   forwardRef,
   HttpException,
   HttpStatus,
@@ -8,10 +10,13 @@ import {
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { plainToInstance } from 'class-transformer';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import * as ExcelJS from 'exceljs';
 import { Product, ProductDocument } from '../products/schemas/product.schema';
 import { ProductsService } from '../products/products.service';
+import { StockService } from '../stock/stock.service';
+import { UserRole } from '../shared/enums/user-role.enum';
+import type { UserDocument } from '../users/schemas/user.schema';
 import { CreateSaleDto, CreateSaleItemDto } from './dto/create-sale.dto';
 import { SaleResponseDto } from './dto/sale-response.dto';
 import { UpdateSaleDto } from './dto/update-sale.dto';
@@ -23,6 +28,7 @@ interface PreparedSalePayload {
   items: Sale['items'];
   total: number;
   esMayorista: boolean;
+  sectorId: Types.ObjectId;
   vendedorId?: string;
 }
 
@@ -34,21 +40,28 @@ export class SalesService {
     private readonly productModel: Model<ProductDocument>,
     @Inject(forwardRef(() => ProductsService))
     private readonly productsService: ProductsService,
+    private readonly stockService: StockService,
   ) {}
 
   async create(
     createSaleDto: CreateSaleDto,
-    vendedorId?: string,
+    vendedor: UserDocument,
   ): Promise<SaleResponseDto> {
-    try {
-      // Validar stock antes de crear la venta
-      await this.validateStock(createSaleDto.items);
+    const vendedorId = String(vendedor.id ?? vendedor._id);
+    const sectorId = this.resolveSectorId(createSaleDto, vendedor);
 
-      const payload = await this.prepareSalePayload(createSaleDto, vendedorId);
+    try {
+      await this.stockService.assertSectorOperativo(sectorId);
+
+      const payload = await this.prepareSalePayload(
+        createSaleDto,
+        sectorId,
+        vendedorId,
+      );
       const createdSale = await this.saleModel.create(payload);
 
-      // Actualizar stock después de crear la venta
-      await this.updateStockOnCreate(createdSale.items);
+      await this.descontarLineas(createdSale, sectorId, vendedorId);
+      await this.ajustarSoldCount(createdSale.items, 1);
 
       return this.mapToDto(createdSale);
     } catch (error) {
@@ -63,8 +76,17 @@ export class SalesService {
     }
   }
 
-  async findAll(): Promise<SaleResponseDto[]> {
-    const sales = await this.saleModel.find().exec();
+  /**
+   * Un admin ve todas las ventas. Cualquier otro rol, solo las de su sector,
+   * con la misma regla que GET /stock.
+   */
+  async findAll(usuario: UserDocument): Promise<SaleResponseDto[]> {
+    const filtro: Record<string, unknown> = {};
+    if (!usuario.roles.includes(UserRole.ADMIN)) {
+      filtro.sectorId = new Types.ObjectId(this.sectorPropioOFallar(usuario));
+    }
+
+    const sales = await this.saleModel.find(filtro).exec();
     return sales.map((sale) => this.mapToDto(sale));
   }
 
@@ -111,11 +133,12 @@ export class SalesService {
     return filter;
   }
 
-  async findOne(id: string): Promise<SaleResponseDto> {
+  async findOne(id: string, usuario: UserDocument): Promise<SaleResponseDto> {
     const sale = await this.saleModel.findById(id).exec();
     if (!sale) {
       throw new NotFoundException('Venta no encontrada');
     }
+    this.assertPuedeVerVenta(sale, usuario);
 
     return this.mapToDto(sale);
   }
@@ -123,13 +146,18 @@ export class SalesService {
   async update(
     id: string,
     updateSaleDto: UpdateSaleDto,
+    usuario: UserDocument,
   ): Promise<SaleResponseDto> {
+    const usuarioId = String(usuario.id ?? usuario._id);
+
     try {
       // Obtener la venta actual para mantener esMayorista si no se actualiza
       const currentSale = await this.saleModel.findById(id).exec();
       if (!currentSale) {
         throw new NotFoundException('Venta no encontrada');
       }
+
+      this.assertPuedeOperarVenta(currentSale, usuario);
 
       const payload: Partial<Sale> = {};
 
@@ -146,28 +174,65 @@ export class SalesService {
         payload.esMayorista = updateSaleDto.esMayorista;
       }
 
-      // Si se actualizan los items, validar stock y ajustar
-      if (Array.isArray(updateSaleDto.items)) {
-        // Validar stock considerando que se restaurará el stock de la venta anterior
-        await this.validateStockOnEdit(
-          currentSale.items,
-          updateSaleDto.items,
-        );
+      // El stock se mueve contra el sector guardado en la venta, no contra
+      // el del usuario que edita: las unidades tienen que volver al mismo
+      // lugar de donde salieron.
+      const sectorId = this.sectorDeLaVenta(currentSale);
+      let stockMovido = false;
 
+      if (Array.isArray(updateSaleDto.items)) {
         const items = await this.buildItems(updateSaleDto.items, esMayorista);
         payload.items = items;
         payload.total = this.calculateTotal(items);
 
-        // Ajustar stock: restaurar el stock de la venta anterior y reducir el de la nueva
-        await this.updateStockOnEdit(currentSale.items, items);
+        if (sectorId) {
+          await this.aplicarDiferenciaDeStock(
+            currentSale.items,
+            items,
+            sectorId,
+            id,
+            usuarioId,
+          );
+          stockMovido = true;
+        }
       }
 
-      const updatedSale = await this.saleModel
-        .findByIdAndUpdate(id, payload, { new: true, runValidators: true })
-        .exec();
+      // Si la venta no se puede guardar, el stock ya movido se deshace: si
+      // no, el sector quedaria con unidades descontadas (o repuestas) por una
+      // edicion que nunca se registro.
+      const revertirStock = async (): Promise<void> => {
+        if (stockMovido && sectorId && payload.items) {
+          await this.aplicarDiferenciaDeStock(
+            payload.items,
+            currentSale.items,
+            sectorId,
+            id,
+            usuarioId,
+          );
+        }
+      };
+
+      let updatedSale: SaleDocument | null;
+      try {
+        updatedSale = await this.saleModel
+          .findByIdAndUpdate(id, payload, { new: true, runValidators: true })
+          .exec();
+      } catch (error) {
+        await revertirStock();
+        throw error;
+      }
 
       if (!updatedSale) {
+        await revertirStock();
         throw new NotFoundException('Venta no encontrada');
+      }
+
+      // soldCount recien cuando la edicion quedo guardada.
+      if (payload.items) {
+        await this.ajustarSoldCountPorDiferencia(
+          currentSale.items,
+          payload.items,
+        );
       }
 
       return this.mapToDto(updatedSale);
@@ -183,23 +248,46 @@ export class SalesService {
     }
   }
 
-  async remove(id: string): Promise<void> {
+  async remove(id: string, usuario: UserDocument): Promise<void> {
+    const usuarioId = String(usuario.id ?? usuario._id);
+
+    const sale = await this.saleModel.findById(id).exec();
+    if (!sale) {
+      throw new NotFoundException('Venta no encontrada');
+    }
+    this.assertPuedeOperarVenta(sale, usuario);
+
     const deletedSale = await this.saleModel.findByIdAndDelete(id).exec();
     if (!deletedSale) {
       throw new NotFoundException('Venta no encontrada');
     }
 
-    // Restaurar stock de todos los productos de la venta eliminada
-    await this.updateStockOnDelete(deletedSale.items);
+    // Las unidades vuelven al sector del que salieron.
+    const sectorId = this.sectorDeLaVenta(deletedSale);
+    if (sectorId) {
+      for (const item of deletedSale.items) {
+        await this.stockService.reponerPorVenta(
+          item.productId.toString(),
+          sectorId,
+          item.cantidad,
+          id,
+          usuarioId,
+        );
+      }
+    }
+
+    await this.ajustarSoldCount(deletedSale.items, -1);
   }
 
   async generateSaleExcel(
     id: string,
+    usuario: UserDocument,
   ): Promise<{ workbook: ExcelJS.Workbook; fileName: string }> {
     const sale = await this.saleModel.findById(id).exec();
     if (!sale) {
       throw new NotFoundException('Venta no encontrada');
     }
+    this.assertPuedeVerVenta(sale, usuario);
 
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('Detalle de venta');
@@ -268,6 +356,7 @@ export class SalesService {
 
   private async prepareSalePayload(
     dto: CreateSaleDto,
+    sectorId: string,
     vendedorId?: string,
   ): Promise<PreparedSalePayload> {
     const fecha = dto.fecha ? new Date(dto.fecha) : new Date();
@@ -280,6 +369,7 @@ export class SalesService {
       items,
       total,
       esMayorista,
+      sectorId: new Types.ObjectId(sectorId),
       ...(vendedorId ? { vendedorId } : {}),
     };
   }
@@ -421,6 +511,7 @@ export class SalesService {
                 : typedPlainSale.vendedorId.toString(),
           }
         : {}),
+      ...(sale.sectorId ? { sectorId: sale.sectorId.toString() } : {}),
     };
     return plainToInstance(SaleResponseDto, saleContract, {
       excludeExtraneousValues: true,
@@ -428,163 +519,249 @@ export class SalesService {
   }
 
   /**
-   * Valida que haya suficiente stock para los items de la venta
+   * Sector del que sale el stock de una venta nueva.
+   *
+   * Por defecto el del vendedor. Un admin puede registrar en otro sector
+   * mandando sectorId; para cualquier otro rol eso seria vender stock ajeno.
    */
-  private async validateStock(items: CreateSaleItemDto[]): Promise<void> {
-    for (const item of items) {
-      const product = await this.productModel.findById(item.productId).exec();
-      if (!product) {
-        throw new NotFoundException(
-          `Producto ${item.productId} no encontrado`,
-        );
-      }
+  private resolveSectorId(
+    dto: CreateSaleDto,
+    vendedor: UserDocument,
+  ): string {
+    const propio = vendedor.sectorId
+      ? vendedor.sectorId.toString()
+      : undefined;
 
-      if (product.stock < item.cantidad) {
-        throw new HttpException(
-          `Stock insuficiente para el producto "${product.nombre}". Stock disponible: ${product.stock}, solicitado: ${item.cantidad}`,
-          HttpStatus.BAD_REQUEST,
+    if (!dto.sectorId) {
+      if (!propio) {
+        throw new BadRequestException(
+          'El usuario no tiene un sector asignado. Asignale uno antes de registrar ventas.',
         );
       }
+      return propio;
     }
+
+    if (dto.sectorId !== propio && !vendedor.roles.includes(UserRole.ADMIN)) {
+      throw new ForbiddenException(
+        'Solo un admin puede registrar una venta en un sector que no es el suyo.',
+      );
+    }
+
+    return dto.sectorId;
   }
 
   /**
-   * Valida stock al editar una venta, considerando el stock que se restaurará
+   * Editar o anular una venta mueve stock del sector de esa venta. Con la
+   * misma regla que el alta, solo un admin puede tocar ventas de un sector
+   * que no es el suyo. Las ventas viejas sin sector quedan solo para admin,
+   * porque no hay forma de saber a quien le pertenecen.
    */
-  private async validateStockOnEdit(
-    oldItems: Sale['items'],
-    newItems: CreateSaleItemDto[],
-  ): Promise<void> {
-    // Crear mapa de cantidades antiguas por producto
-    const oldItemsMap = new Map<string, number>();
-    for (const item of oldItems) {
-      const productId =
-        typeof item.productId === 'string'
-          ? item.productId
-          : item.productId.toString();
-      oldItemsMap.set(productId, (oldItemsMap.get(productId) || 0) + item.cantidad);
-    }
-
-    // Validar cada producto nuevo considerando el stock que se restaurará
-    for (const item of newItems) {
-      const product = await this.productModel.findById(item.productId).exec();
-      if (!product) {
-        throw new NotFoundException(
-          `Producto ${item.productId} no encontrado`,
-        );
-      }
-
-      const oldCantidad = oldItemsMap.get(item.productId) || 0;
-      // Stock disponible = stock actual + cantidad que se restaurará de la venta anterior
-      const stockDisponible = product.stock + oldCantidad;
-
-      if (stockDisponible < item.cantidad) {
-        throw new HttpException(
-          `Stock insuficiente para el producto "${product.nombre}". Stock disponible: ${stockDisponible} (${product.stock} actual + ${oldCantidad} a restaurar), solicitado: ${item.cantidad}`,
-          HttpStatus.BAD_REQUEST,
-        );
-      }
-    }
-  }
-
-  /**
-   * Actualiza el stock cuando se crea una venta (reduce el stock)
-   */
-  private async updateStockOnCreate(items: Sale['items']): Promise<void> {
-    for (const item of items) {
-      const productId =
-        typeof item.productId === 'string'
-          ? item.productId
-          : item.productId.toString();
-
-      await this.productModel.findByIdAndUpdate(
-        productId,
-        {
-          $inc: { stock: -item.cantidad, soldCount: item.cantidad },
-        },
-        { new: true },
+  private assertPuedeOperarVenta(
+    sale: SaleDocument,
+    usuario: UserDocument,
+  ): void {
+    if (!this.esDeSuSector(sale, usuario)) {
+      throw new ForbiddenException(
+        'Solo un admin puede modificar o anular una venta de otro sector.',
       );
     }
   }
 
+  private assertPuedeVerVenta(sale: SaleDocument, usuario: UserDocument): void {
+    if (!this.esDeSuSector(sale, usuario)) {
+      // 404 y no 403: para quien no la puede ver, la venta no existe.
+      throw new NotFoundException('Venta no encontrada');
+    }
+  }
+
+  /** Admin: siempre. Otro rol: solo ventas con sector, y que sea el suyo. */
+  private esDeSuSector(sale: SaleDocument, usuario: UserDocument): boolean {
+    if (usuario.roles.includes(UserRole.ADMIN)) {
+      return true;
+    }
+
+    const sectorVenta = this.sectorDeLaVenta(sale);
+    const propio = usuario.sectorId ? usuario.sectorId.toString() : undefined;
+    return !!sectorVenta && sectorVenta === propio;
+  }
+
+  private sectorPropioOFallar(usuario: UserDocument): string {
+    if (!usuario.sectorId) {
+      throw new ForbiddenException(
+        'No tenés un sector asignado. Pedile a un admin que te asigne uno.',
+      );
+    }
+    return usuario.sectorId.toString();
+  }
+
   /**
-   * Actualiza el stock cuando se edita una venta
-   * Restaura el stock de los items anteriores y reduce el stock de los nuevos items
+   * Sector guardado en la venta. Las ventas anteriores al stock por sector no
+   * lo tienen: en ese caso no hay a donde devolver las unidades, asi que el
+   * llamador se saltea el movimiento en lugar de inventar un sector.
    */
-  private async updateStockOnEdit(
+  private sectorDeLaVenta(sale: SaleDocument): string | undefined {
+    return sale.sectorId ? sale.sectorId.toString() : undefined;
+  }
+
+  /**
+   * Descuenta las lineas de una venta recien creada.
+   *
+   * Sin transaccion las lineas no son atomicas entre si, asi que si una falla
+   * se devuelven las ya descontadas y se borra la venta. Queda como si nunca
+   * se hubiera registrado, en vez de dejar stock evaporado y una venta a medias.
+   */
+  private async descontarLineas(
+    sale: SaleDocument,
+    sectorId: string,
+    usuarioId: string,
+  ): Promise<void> {
+    const saleId = String(sale.id);
+    const descontadas: Sale['items'] = [];
+
+    try {
+      for (const item of sale.items) {
+        await this.stockService.descontarPorVenta(
+          item.productId.toString(),
+          sectorId,
+          item.cantidad,
+          saleId,
+          usuarioId,
+        );
+        descontadas.push(item);
+      }
+    } catch (error) {
+      for (const item of descontadas) {
+        await this.stockService.reponerPorVenta(
+          item.productId.toString(),
+          sectorId,
+          item.cantidad,
+          saleId,
+          usuarioId,
+          'Reversa de venta fallida',
+        );
+      }
+      await this.saleModel.findByIdAndDelete(saleId).exec();
+      throw error;
+    }
+  }
+
+  /**
+   * Lleva el stock del sector de una cantidad vendida a otra.
+   *
+   * Trabaja por diferencia en vez de devolver todo y volver a descontar: son
+   * menos operaciones y evita rechazar una edicion que en neto no necesita
+   * mas stock del que ya habia.
+   */
+  private async aplicarDiferenciaDeStock(
+    oldItems: Sale['items'],
+    newItems: Sale['items'],
+    sectorId: string,
+    saleId: string,
+    usuarioId?: string,
+  ): Promise<void> {
+    const deltas = this.calcularDeltas(oldItems, newItems);
+    const aplicados: Array<{ productId: string; delta: number }> = [];
+
+    try {
+      for (const [productId, delta] of deltas) {
+        if (delta === 0) {
+          continue;
+        }
+
+        if (delta > 0) {
+          await this.stockService.descontarPorVenta(
+            productId,
+            sectorId,
+            delta,
+            saleId,
+            usuarioId,
+          );
+        } else {
+          await this.stockService.reponerPorVenta(
+            productId,
+            sectorId,
+            -delta,
+            saleId,
+            usuarioId,
+            'Edición de venta',
+          );
+        }
+
+        aplicados.push({ productId, delta });
+      }
+    } catch (error) {
+      for (const aplicado of aplicados) {
+        if (aplicado.delta > 0) {
+          await this.stockService.reponerPorVenta(
+            aplicado.productId,
+            sectorId,
+            aplicado.delta,
+            saleId,
+            usuarioId,
+            'Reversa de edición fallida',
+          );
+        } else {
+          await this.stockService.descontarPorVenta(
+            aplicado.productId,
+            sectorId,
+            -aplicado.delta,
+            saleId,
+            usuarioId,
+          );
+        }
+      }
+      throw error;
+    }
+  }
+
+  /** Unidades de mas (positivo) o de menos (negativo) por producto. */
+  private calcularDeltas(
+    oldItems: Sale['items'],
+    newItems: Sale['items'],
+  ): Map<string, number> {
+    const deltas = new Map<string, number>();
+
+    for (const item of oldItems) {
+      const productId = item.productId.toString();
+      deltas.set(productId, (deltas.get(productId) ?? 0) - item.cantidad);
+    }
+
+    for (const item of newItems) {
+      const productId = item.productId.toString();
+      deltas.set(productId, (deltas.get(productId) ?? 0) + item.cantidad);
+    }
+
+    return deltas;
+  }
+
+  /** soldCount sigue siendo global: cuenta ventas, no ubicacion. */
+  private async ajustarSoldCount(
+    items: Sale['items'],
+    signo: 1 | -1,
+  ): Promise<void> {
+    for (const item of items) {
+      await this.productModel
+        .findByIdAndUpdate(item.productId.toString(), {
+          $inc: { soldCount: signo * item.cantidad },
+        })
+        .exec();
+    }
+  }
+
+  private async ajustarSoldCountPorDiferencia(
     oldItems: Sale['items'],
     newItems: Sale['items'],
   ): Promise<void> {
-    // Crear mapas para comparar cantidades por producto
-    const oldItemsMap = new Map<string, number>();
-    const newItemsMap = new Map<string, number>();
-
-    // Mapear items antiguos
-    for (const item of oldItems) {
-      const productId =
-        typeof item.productId === 'string'
-          ? item.productId
-          : item.productId.toString();
-      oldItemsMap.set(productId, (oldItemsMap.get(productId) || 0) + item.cantidad);
-    }
-
-    // Mapear items nuevos
-    for (const item of newItems) {
-      const productId =
-        typeof item.productId === 'string'
-          ? item.productId
-          : item.productId.toString();
-      newItemsMap.set(productId, (newItemsMap.get(productId) || 0) + item.cantidad);
-    }
-
-    // Obtener todos los productos únicos
-    const allProductIds = new Set([
-      ...oldItemsMap.keys(),
-      ...newItemsMap.keys(),
-    ]);
-
-    // Actualizar stock para cada producto
-    for (const productId of allProductIds) {
-      const oldCantidad = oldItemsMap.get(productId) || 0;
-      const newCantidad = newItemsMap.get(productId) || 0;
-      const diferencia = newCantidad - oldCantidad;
-
-      if (diferencia !== 0) {
-        // Si la diferencia es negativa, se restaura stock
-        // Si la diferencia es positiva, se reduce stock
-        await this.productModel.findByIdAndUpdate(
-          productId,
-          {
-            $inc: {
-              stock: -diferencia,
-              soldCount: diferencia,
-            },
-          },
-          { new: true },
-        );
+    for (const [productId, delta] of this.calcularDeltas(oldItems, newItems)) {
+      if (delta === 0) {
+        continue;
       }
+      await this.productModel
+        .findByIdAndUpdate(productId, { $inc: { soldCount: delta } })
+        .exec();
     }
   }
 
-  /**
-   * Restaura el stock cuando se elimina una venta
-   */
-  private async updateStockOnDelete(items: Sale['items']): Promise<void> {
-    for (const item of items) {
-      const productId =
-        typeof item.productId === 'string'
-          ? item.productId
-          : item.productId.toString();
-
-      await this.productModel.findByIdAndUpdate(
-        productId,
-        {
-          $inc: { stock: item.cantidad, soldCount: -item.cantidad },
-        },
-        { new: true },
-      );
-    }
-  }
 
   private extractMessage(error: unknown, fallback: string): string {
     if (error instanceof Error && error.message) {
